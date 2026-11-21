@@ -1,32 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">xHoly logo</title>
-  <desc id="desc">An X formed by two intersecting crucifix-style crosses in gold on a dark background.</desc>
+  <desc id="desc">An X formed by two intersecting crucifix-style crosses inside a circle, evoking the Xbox logo silhouette with a holy motif. Gold on dark.</desc>
 
-  <!-- Background -->
-  <rect width="512" height="512" rx="96" fill="#141414"/>
-  <rect x="8" y="8" width="496" height="496" rx="88" fill="none" stroke="#2a2a2a" stroke-width="4"/>
+  <!-- Background: dark neutral -->
+  <rect width="512" height="512" rx="112" fill="#1a1a1a"/>
 
-  <!-- Halo ring (sacred accent) -->
-  <circle cx="256" cy="256" r="200" fill="none" stroke="#FFD700" stroke-width="6" opacity="0.25"/>
+  <!-- Xbox-style sphere ring -->
+  <circle cx="256" cy="256" r="196" fill="none" stroke="#FFD700" stroke-width="10" opacity="0.9"/>
 
-  <!-- Left cross of the X (rotated -45deg): vertical beam + horizontal serif -->
-  <g transform="translate(256 256) rotate(-45)">
-    <!-- vertical beam -->
-    <rect x="-26" y="-190" width="52" height="380" rx="14" fill="#FFD700"/>
-    <!-- horizontal serif near the top -->
-    <rect x="-110" y="-176" width="220" height="40" rx="12" fill="#FFD700"/>
-  </g>
-
-  <!-- Right cross of the X (rotated +45deg): vertical beam + horizontal serif -->
-  <g transform="translate(256 256) rotate(45)">
-    <!-- vertical beam -->
-    <rect x="-26" y="-190" width="52" height="380" rx="14" fill="#FFD700"/>
-    <!-- horizontal serif near the top -->
-    <rect x="-110" y="-176" width="220" height="40" rx="12" fill="#FFD700"/>
+  <!--
+    The X: two diagonal "crosses". Each cross = a thick vertical beam with a
+    short horizontal serif near its top, rotated +/-45deg so the beams cross
+    at the center and the serifs point outward like a crown.
+  -->
+  <g transform="translate(256 256)">
+    <!-- Cross A: rotated -45deg -->
+    <g transform="rotate(-45)">
+      <rect x="-30" y="-168" width="60" height="336" rx="16" fill="#FFD700"/>
+      <rect x="-96" y="-156" width="192" height="34" rx="14" fill="#FFD700"/>
+    </g>
+    <!-- Cross B: rotated +45deg -->
+    <g transform="rotate(45)">
+      <rect x="-30" y="-168" width="60" height="336" rx="16" fill="#FFD700"/>
+      <rect x="-96" y="-156" width="192" height="34" rx="14" fill="#FFD700"/>
+    </g>
   </g>
 
   <!-- Center node where the crosses merge -->
-  <circle cx="256" cy="256" r="34" fill="#141414"/>
-  <circle cx="256" cy="256" r="34" fill="none" stroke="#FFD700" stroke-width="8"/>
-  <circle cx="256" cy="256" r="10" fill="#FFD700"/>
+  <circle cx="256" cy="256" r="30" fill="#1a1a1a"/>
+  <circle cx="256" cy="256" r="30" fill="none" stroke="#FFD700" stroke-width="9"/>
+  <circle cx="256" cy="256" r="9" fill="#FFD700"/>
 </svg>

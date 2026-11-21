@@ -20,7 +20,6 @@ pub struct Config {
     pub profiles: Vec<Profile>,
 }
 
-
 /// Video/output settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

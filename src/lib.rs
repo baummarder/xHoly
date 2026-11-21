@@ -9,6 +9,7 @@ pub mod config;
 pub mod core;
 pub mod gpu;
 pub mod io;
+pub mod optical;
 pub mod runtime;
 
 use std::time::Duration;

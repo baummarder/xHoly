@@ -62,6 +62,8 @@ xHoly/
 │   ├── CONTRIBUTORS.md
 │   └── workflows/ci.yml
 ├── CONTRIBUTING.md
+├── INSTALL.md               # Prerequisites & setup guide
+├── MISSING.md               # Audit of components still to implement
 ├── src/                     # Rust crate
 │   ├── lib.rs  main.rs
 │   ├── core/      (cpu, memory, emulation)
@@ -100,6 +102,15 @@ sbt fullOptJS       # Scala.js bundle → target/scala-*/xholy-web-opt.js
 
 The Rust host locates these artifacts automatically (see
 `src/runtime/scala_bridge.rs`).
+
+### Optical drives
+
+```sh
+xholy --drives                              # detect physical drives
+xholy --mount "D:\\" --list                  # scan a physical disc
+xholy --mount "D:\\Games\\mygame.iso" --list # scan an ISO image
+xholy --mount game.iso --mount game-disc2.iso game.xex   # multi-disc
+```
 
 ### Running
 

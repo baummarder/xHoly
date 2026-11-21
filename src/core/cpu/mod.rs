@@ -9,6 +9,8 @@
 use crate::core::memory::{GuestAddr, Memory};
 use crate::gpu::GpuContext;
 
+pub mod translator;
+
 /// Number of architectural registers exposed to the translator.
 pub const REGISTER_COUNT: usize = 32;
 
