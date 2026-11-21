@@ -30,6 +30,11 @@ notify = "8"
 winit = "0.30"
 wgpu = "24"
 
+[features]
+default = []
+# Phase-1 ARM64 interpreter stub (always compiled; flag kept for CLI compat)
+cpu-stub = []
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
