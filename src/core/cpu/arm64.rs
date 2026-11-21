@@ -821,6 +821,32 @@ pub fn run_hello_world() -> CpuState {
     cpu
 }
 
+/// End-to-end Phase-2 check: run the CPU program, feed its console output
+/// through the GPU pipeline, and return the rendered RGBA8 frame.
+///
+/// Uses the wgpu backend when an adapter is available and falls back to
+/// the deterministic software rasterizer otherwise.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn run_hello_world_gpu() -> Result<Vec<u8>, String> {
+    let cpu = run_hello_world();
+    // The text bitmap is 8 px tall; render at native texel size ×2 for
+    // a slightly larger readback.
+    crate::core::gpu::render_text(&cpu.output, 256, 16)
+}
+
+/// Software-only variant — always available, no GPU required.
+pub fn run_hello_world_software() -> Vec<u8> {
+    let cpu = run_hello_world();
+    crate::core::gpu::software::render_scaled(
+        &crate::core::gpu::GpuFrame {
+            text: cpu.output.clone(),
+            ..Default::default()
+        },
+        256,
+        16,
+    )
+}
+
 impl fmt::Display for IrOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

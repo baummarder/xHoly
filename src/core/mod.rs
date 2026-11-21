@@ -2,6 +2,7 @@
 
 pub mod cpu;
 pub mod emulation;
+pub mod gpu;
 pub mod memory;
 
 pub use emulation::{EmulationCore, FrameResult};
