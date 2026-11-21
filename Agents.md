@@ -1,22 +1,29 @@
-# AI Agent Co-Authors
+# AI Agents and Co-Authorship
 
-This file records the AI agents that contribute to xHoly. Update the table when another agent contributes.
+This document records AI agents that contribute to xHoly and sets the commit-attribution convention. Update the table when a new agent makes a substantive contribution.
+
+## Agent Roles
 
 | Agent | Role | Contributions |
 |---|---|---|
-| Devin | AI software engineering agent | Implements assigned changes and may contribute research, tests, and reviews. |
-| GitHub Copilot | AI coding assistant | Assists with implementation, debugging, documentation, and tests. |
+| Devin | AI software engineering agent | May implement assigned changes and contribute research, tests, or reviews. |
+| GitHub Copilot | AI coding assistant | May implement changes, debug issues, and contribute documentation or tests. |
+
+These are role descriptions, not a claim that every agent contributed to every change. Record only agents that actually contributed to a given commit.
 
 ## Commit Attribution
 
-Whenever GitHub Copilot or another agent contributes to a commit that it pushes, identify that agent in the commit's `Co-authored-by` trailer. Use the agent's recognized name and email from this table (or add the agent to the table first).
+When an AI agent contributes to a commit, include that agent as a co-author using a `Co-authored-by:` trailer. Use the agent's recognized name and verified email; do not guess an identity. Add new agents to the table when they contribute.
 
-For example, to record GitHub Copilot as a co-author while preserving the primary author's identity:
+Example with GitHub Copilot as a co-author:
 
-`git commit --author="Primary Author <primary-author@example.com>" -m "Describe change" -m "Co-authored-by: GitHub Copilot <copilot@users.noreply.github.com>"`
+```sh
+git commit -m "Describe change" \
+  -m "Co-authored-by: GitHub Copilot <copilot@users.noreply.github.com>"
+```
 
-For another agent, replace the trailer's name and email with that agent's recognized identity. `--author` sets the commit's primary author; it does not add a co-author. If an agent is the primary author, use its identity with `--author`; add a `Co-authored-by:` trailer for each distinct agent co-author.
+For multiple contributors, add one `-m "Co-authored-by: Name <email>"` argument for each co-author. `git commit --author="Name <email>"` sets the commit's primary author; it does not add a co-author. Use `--author` when the agent is the primary author, and use the trailer for each distinct co-author.
 
 ## Why Track Co-Authorship
 
-Co-authorship makes AI contributions transparent, ensures contributors receive appropriate credit, and provides a reproducible record of which agents participated in the project's changes.
+Co-authorship makes AI contributions transparent, gives contributors appropriate credit, and leaves a reproducible record of which agents participated in a change.
