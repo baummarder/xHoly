@@ -5,6 +5,8 @@ type: software
 authors:
   - family-names: Baumgardner
     given-names: baummarder
+  - family-names: Devin AI Integration
+    alias: devin-ai-integration[bot]
 repository-code: "https://github.com/baummarder/xHoly"
 url: "https://github.com/baummarder/xHoly"
 license: Apache-2.0
