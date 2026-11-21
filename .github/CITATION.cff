@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use xHoly, please cite it as below."
+title: "xHoly: A Hybrid Rust/Scala Emulator Architecture for Xbox Series S|X and Xbox One"
+type: software
+authors:
+  - family-names: Baumgardner
+    given-names: baummarder
+  - family-names: Cognition
+    given-names: Devin
+repository-code: "https://github.com/baummarder/xHoly"
+url: "https://github.com/baummarder/xHoly"
+license: Apache-2.0
+version: 0.1.0
+keywords:
+  - emulator
+  - xbox
+  - rust
+  - scala
+  - research
+abstract: >-
+  xHoly is a research emulator/simulator architecture targeting Xbox Series
+  S|X and Xbox One game images, built on a hybrid Rust + Scala stack with a
+  GPU translation layer, hybrid TOML configuration, and a JVM/Scala.js game
+  runtime bridge.

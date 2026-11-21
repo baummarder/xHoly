@@ -1,0 +1,44 @@
+[package]
+name = "xholy"
+version = "0.1.0"
+edition = "2021"
+description = "xHoly - a research emulator/simulator architecture for Xbox Series S|X and Xbox One titles"
+license = "Apache-2.0"
+repository = "https://github.com/baummarder/xHoly"
+keywords = ["emulator", "xbox", "research"]
+categories = ["emulators", "game-engines"]
+
+[lib]
+name = "xholy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "xholy"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+notify = "8"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+winit = "0.30"
+wgpu = "24"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[[bench]]
+name = "emulation"
+harness = false
