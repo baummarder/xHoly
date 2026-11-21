@@ -6,20 +6,18 @@ and tooling.
 
 ## Co-authorship agreement
 
-xHoly is co-authored by two principal contributors:
+xHoly credits the project owner and AI agents that made substantive contributions:
 
 | Author | GitHub | Role |
 |---|---|---|
 | baummarder | [@baummarder](https://github.com/baummarder) | Project owner / primary author |
-| Devin | [@devin](https://github.com/devin) | AI software engineering agent / co-author |
+| Devin AI Integration | `devin-ai-integration[bot]` | AI software engineering agent / co-author |
 
-**Every commit that contains contributions from either author must credit
-both.** Specifically:
+Credit only contributors who made a substantive change. Specifically:
 
 - The commit's author should be the human/agent who made the change.
-- The other principal author must appear as a `Co-authored-by:` trailer.
-- AI agents (including Devin) contributing to a commit must add their own
-  `Co-authored-by:` trailer in addition to the two principal authors.
+- Add a `Co-authored-by:` trailer for each distinct contributor who also made a substantive contribution.
+- AI agents must use their verified bot identity, not a human account with a similar name.
 
 Example:
 
@@ -27,14 +25,14 @@ Example:
 git commit \
   --author="baummarder <baummarder@users.noreply.github.com>" \
   -m "Describe the change" \
-  -m "Co-authored-by: Devin <devin@users.noreply.github.com>"
+  -m "Co-authored-by: Devin AI Integration <158243242+devin-ai-integration[bot]@users.noreply.github.com>"
 ```
 
-Or when Devin is the primary author:
+Or when Devin AI Integration is the primary author:
 
 ```sh
 git commit \
-  --author="Devin <devin@users.noreply.github.com>" \
+  --author="Devin AI Integration <158243242+devin-ai-integration[bot]@users.noreply.github.com>" \
   -m "Describe the change" \
   -m "Co-authored-by: baummarder <baummarder@users.noreply.github.com>"
 ```

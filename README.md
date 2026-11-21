@@ -139,7 +139,6 @@ see `benchmarks/REPORT.md` for the scaffold baseline.
 
 ## Contributing & co-authorship
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). All commits must credit both
-project authors — `baummarder` and `Devin`.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Credit only contributors who made a substantive change. AI agents should use their verified bot identity.
 
 **Redeem Your Games.**

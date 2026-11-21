@@ -6,7 +6,7 @@ This document records AI agents that contribute to xHoly and sets the commit-att
 
 | Agent | Role | Contributions |
 |---|---|---|
-| Devin | AI software engineering agent | May implement assigned changes and contribute research, tests, or reviews. |
+| Devin AI Integration (`devin-ai-integration[bot]`, `158243242+devin-ai-integration[bot]@users.noreply.github.com`) | AI software engineering agent | May implement assigned changes and contribute research, tests, or reviews. |
 | GitHub Copilot | AI coding assistant | May implement changes, debug issues, and contribute documentation or tests. |
 
 These are role descriptions, not a claim that every agent contributed to every change. Record only agents that actually contributed to a given commit.

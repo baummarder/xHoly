@@ -5,8 +5,6 @@ type: software
 authors:
   - family-names: Baumgardner
     given-names: baummarder
-  - family-names: Cognition
-    given-names: Devin
 repository-code: "https://github.com/baummarder/xHoly"
 url: "https://github.com/baummarder/xHoly"
 license: Apache-2.0

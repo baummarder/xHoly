@@ -105,7 +105,7 @@ supports named per-game profiles, and is hot-reloaded via `notify`.
 
 ## 9. Repository & co-authorship
 
-Apache-2.0 licensed. Co-authored by **baummarder** and **Devin**; see
+Apache-2.0 licensed. AI-agent co-authorship is recorded in commit history; see
 `CONTRIBUTING.md` and `.github/CITATION.cff`.
 
 *Redeem Your Games.*

@@ -6,7 +6,7 @@ xHoly is co-authored by the following principal contributors. See
 | Name | GitHub | Contribution |
 |---|---|---|
 | baummarder | [@baummarder](https://github.com/baummarder) | Project creator, architecture, co-author |
-| Devin | [@devin](https://github.com/devin) | AI software engineering agent, implementation, co-author |
+| Devin AI Integration | `devin-ai-integration[bot]` | AI agent, implementation, co-author |
 
 Additional contributors will be listed here as they make substantive
 contributions.

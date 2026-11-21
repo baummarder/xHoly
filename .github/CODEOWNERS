@@ -1,6 +1,6 @@
-# xHoly maintainers — review requests route to both authors.
-*           @baummarder @devin
-/src/       @baummarder @devin
-/scala/     @baummarder @devin
-/docs/      @baummarder @devin
-/.github/   @baummarder @devin
+# Project owner reviews all paths.
+*           @baummarder
+/src/       @baummarder
+/scala/     @baummarder
+/docs/      @baummarder
+/.github/   @baummarder
