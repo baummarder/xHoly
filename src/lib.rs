@@ -16,6 +16,7 @@ pub mod gpu;
 pub mod gui;
 pub mod input;
 pub mod io;
+pub mod jit;
 pub mod logging;
 pub mod mod_system;
 pub mod multiplayer;

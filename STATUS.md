@@ -89,6 +89,17 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   z-order, hover/press/drag, Clicked/Dragged events, framebuffer draw
 - [x] **Texture atlas + ISO-offset loader + wgpu texture cache**
   (`src/gui/textures.rs`)
+- [x] **Phase 13 JIT** (`src/jit/`) — x86-64 → WASM pipeline, pure
+  Rust, no external deps: subset disassembler (REX.W, ModR/M reg-reg,
+  mov/add/sub/xor/and/or/cmp/test/inc/dec/neg/not/push/pop/jmp/jcc/
+  call/ret/syscall/nop/movzx/movsx), dependency scheduler, linear-scan
+  allocator, real WASM 1.0 binary writer, own WASM interpreter
+  (i32/i64 locals+globals, memory, imports, select). Each x86 basic
+  block → WASM func returning next guest offset; GPRs→i64 globals,
+  flags→i32 globals, `syscall`→`xholy.syscall` host import.
+  **Honest limits:** no memory operands/SIMD, PF untracked, CF/OF
+  precise for sub/cmp only, `wasmtime` not required but also not
+  integrated — the interpreter executes the emitted subset.
 - [x] **Phase 12 rendering additions** — `src/gui/windowed/
   frame_buffer.rs` (fused color+depth `FrameBuffer`, Load/Clear pass
   API, dark-Xbox clear color) and DXBC-style texture containers in
