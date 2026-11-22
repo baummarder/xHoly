@@ -13,7 +13,9 @@ pub mod allocator;
 pub mod cache;
 pub mod compiler;
 pub mod disassembler;
+pub mod emulator_loop;
 pub mod exception;
+pub mod flags;
 pub mod memory;
 pub mod runtime;
 pub mod scheduler;
@@ -39,6 +41,8 @@ pub enum JitError {
     RelocationError(String),
     /// Runtime failure (trap, bad call target, ...).
     Runtime(String),
+    /// JIT path disabled and no interpreter fallback configured.
+    FallbackDisabled,
 }
 
 impl std::fmt::Display for JitError {
@@ -52,6 +56,7 @@ impl std::fmt::Display for JitError {
             Self::CacheMiss => write!(f, "cache miss"),
             Self::RelocationError(s) => write!(f, "relocation: {s}"),
             Self::Runtime(s) => write!(f, "runtime: {s}"),
+            Self::FallbackDisabled => write!(f, "jit disabled and fallback unavailable"),
         }
     }
 }
@@ -62,5 +67,7 @@ impl std::error::Error for JitError {}
 pub type JitResult<T> = Result<T, JitError>;
 
 pub use compiler::{CompiledBlock, CompiledModule, JitCompiler};
-pub use disassembler::{decode_all, disassemble, Cond, InstrKind, Operand, X86Instr};
+pub use disassembler::{decode_all, disassemble, Cond, InstrKind, MemOperand, Operand, X86Instr};
+pub use emulator_loop::{JitConfig, JitEmulator, WasmJitEmulator, X86Interpreter};
+pub use flags::JitFlags;
 pub use runtime::{JitRuntime, RuntimeConfig};

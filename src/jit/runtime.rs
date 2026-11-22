@@ -47,13 +47,15 @@ pub enum WVal {
 }
 
 impl WVal {
-    fn as_i64(self) -> i64 {
+    /// Coerce to i64 (i32 sign-extends).
+    pub fn as_i64(self) -> i64 {
         match self {
             Self::I64(v) => v,
             Self::I32(v) => v as i64,
         }
     }
-    fn as_i32(self) -> i32 {
+    /// Coerce to i32.
+    pub fn as_i32(self) -> i32 {
         match self {
             Self::I32(v) => v,
             Self::I64(v) => v as i32,

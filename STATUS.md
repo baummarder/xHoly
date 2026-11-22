@@ -90,16 +90,31 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [x] **Texture atlas + ISO-offset loader + wgpu texture cache**
   (`src/gui/textures.rs`)
 - [x] **Phase 13 JIT** (`src/jit/`) — x86-64 → WASM pipeline, pure
-  Rust, no external deps: subset disassembler (REX.W, ModR/M reg-reg,
-  mov/add/sub/xor/and/or/cmp/test/inc/dec/neg/not/push/pop/jmp/jcc/
-  call/ret/syscall/nop/movzx/movsx), dependency scheduler, linear-scan
+  Rust, no external deps: subset disassembler (REX.W, ModR/M reg-reg
+  **and memory operands** mod 0/1/2 + SIB + disp8/disp32, mov/add/
+  sub/xor/and/or/cmp/test/inc/dec/neg/not/push/pop/jmp/jcc/call/
+  ret/syscall/nop/movzx/movsx, SSE2 integer subset: movd/movq/
+  movdqa/movdqu/paddq/psubq/pand/por/pxor via xmm lane globals),
+  dependency scheduler (mem ops + push/pop are barriers), linear-scan
   allocator, real WASM 1.0 binary writer, own WASM interpreter
   (i32/i64 locals+globals, memory, imports, select). Each x86 basic
   block → WASM func returning next guest offset; GPRs→i64 globals,
-  flags→i32 globals, `syscall`→`xholy.syscall` host import.
-  **Honest limits:** no memory operands/SIMD, PF untracked, CF/OF
-  precise for sub/cmp only, `wasmtime` not required but also not
-  integrated — the interpreter executes the emitted subset.
+  flags→6×i32 globals (zf/sf/cf/of/pf/af — PF exact parity, AF aux
+  carry), XMM→32×i64 lane globals, `syscall`→`xholy.syscall` host
+  import.
+- [x] **Phase 14 JIT integration** (`src/jit/emulator_loop.rs`,
+  `src/jit/flags.rs`) — `JitEmulator` trait + `WasmJitEmulator`
+  (compile→execute→exception-unwind), `JitConfig`, `JitFlags` EFLAGS
+  model, `set_syscall_handler` host hook, and `X86Interpreter`: a
+  scalar fallback executing the *same decoded subset* (mem operands,
+  SIMD lanes, all flags) when the JIT fails or is disabled.
+  `EmulationCore` gained `jit: Option<WasmJitEmulator>` +
+  `compile_and_run(program)`; `--enable-jit` / `--jit-no-fallback`
+  CLI flags; `Emulator::enable_jit()`.
+  **Honest limits:** RIP-relative mod=0 rm=101 decodes as absolute
+  disp32; SIMD is integer-lane only (no packed FP, no byte/word
+  lanes); `wasmtime` not integrated — the interpreter executes the
+  emitted subset.
 - [x] **Phase 12 rendering additions** — `src/gui/windowed/
   frame_buffer.rs` (fused color+depth `FrameBuffer`, Load/Clear pass
   API, dark-Xbox clear color) and DXBC-style texture containers in
@@ -123,7 +138,10 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   `--game` runs *small* ARM64 programs (hello-world works end-to-end).
 - [ ] Kernel syscalls are xHoly-assigned numbers, not the real Xbox
   XAM/loader ABI; scheduler is cooperative snapshots, not preemptive.
-- [ ] No JIT — interpreter only (a dynasm-style JIT is future work).
+- [ ] No *native* JIT — the x86-64→WASM JIT exists (`src/jit/`) but
+  executes in a Rust WASM interpreter, not machine code; a
+  dynasm-style JIT remains future work. The guest CPU loop still runs
+  the ARM64-style interpreter; `compile_and_run` is the x86-64 entry.
 - [ ] Guest can't yet drive the wgpu GUI — no framebuffer→renderer path.
 - [ ] GUI still on winit; `--native-wm` proves the C++ WM works but
   the main windowed GUI hasn't migrated to it.

@@ -16,20 +16,24 @@
 //! ## State mapping
 //!
 //! - GPRs rax…r15 → mutable `i64` globals 0–15 (rsp = global 4).
-//! - Flags zf/sf/cf/of → mutable `i32` globals 16–19.
+//! - Flags zf/sf/cf/of/pf/af → mutable `i32` globals 16–21.
+//! - XMM0–15 → `i64` globals 22–53 (lo/hi lane pair per register).
 //! - `syscall` → `call` to imported host function `xholy.syscall`
 //!   `[] -> [i64]`; result lands in rax.
-//! - Expression temporaries → WASM locals (3×i64: a, b, res).
+//! - Expression temporaries → WASM locals (5×i64: a, b, res, t, u).
 //!
 //! ## Honest limitations
 //!
-//! - CF/OF are computed for `sub`/`cmp` only; `add` sets ZF/SF/CF
-//!   (OF left 0), logic ops set ZF/SF and clear CF/OF.
-//! - Parity flag PF is not tracked (`jp`→0, `jnp`→1).
-//! - Memory operands are rejected by the decoder.
+//! - RIP-relative `mod=0 rm=101` memory operands decode as absolute
+//!   disp32 (documented in the decoder).
+//! - SIMD covers integer lane-wise ops only (paddq/psubq/pand/por/
+//!   pxor, movd/movq/movdqa/movdqu); packed FP and byte/word lanes
+//!   are rejected.
+//! - PF is computed exactly (even parity of the low result byte);
+//!   AF follows the standard `(a^b^res)>>4 & 1` rule.
 
 use super::allocator::Allocator;
-use super::disassembler::{decode_all, Cond, InstrKind, Operand, X86Instr};
+use super::disassembler::{decode_all, Cond, InstrKind, MemOperand, Operand, SimdOp, X86Instr};
 use super::scheduler::Scheduler;
 use super::wasm_binary::{CodeEntry, FuncType, Global, Import, ValType, WasmModule};
 use super::{JitError, JitResult};
@@ -39,17 +43,26 @@ use std::collections::HashMap;
 const N_GPRS: u32 = 16;
 /// Global index of rsp (reg 4).
 const G_RSP: u32 = 4;
-/// First flag global (zf, sf, cf, of as i32).
+/// First flag global (zf, sf, cf, of, pf, af as i32).
 const G_ZF: u32 = N_GPRS;
 const G_SF: u32 = N_GPRS + 1;
 const G_CF: u32 = N_GPRS + 2;
 const G_OF: u32 = N_GPRS + 3;
+const G_PF: u32 = N_GPRS + 4;
+const G_AF: u32 = N_GPRS + 5;
+/// Number of i32 flag globals.
+const N_FLAGS: u32 = 6;
+/// First XMM global: xmmN occupies `G_XMM0 + 2N` (lo) and `+1` (hi).
+const G_XMM0: u32 = N_GPRS + N_FLAGS;
 
-/// WASM locals per block function: [a, b, res] i64 temps.
-const N_LOCALS: u32 = 3;
+/// WASM locals per block function: [a, b, res, t, u] i64 temps.
+const N_LOCALS: u32 = 5;
 const L_A: u32 = 0;
 const L_B: u32 = 1;
 const L_R: u32 = 2;
+const L_T: u32 = 3;
+#[allow(dead_code)]
+const L_U: u32 = 4;
 
 /// One compiled basic block.
 #[derive(Debug, Clone)]
@@ -176,11 +189,69 @@ impl Emit {
         self.b(op::LOCAL_GET);
         self.u(l);
     }
-    /// Push the value of an operand (reg global or immediate).
+    /// Push the i32 linear address of a memory operand.
+    /// `base + index*scale + disp` (missing parts contribute 0).
+    fn addr_i32(&mut self, m: &MemOperand) {
+        if m.base.is_none() && m.index.is_none() {
+            self.i64c(m.disp);
+            self.b(op::I32_WRAP_I64);
+            return;
+        }
+        if let Some(b) = m.base {
+            self.gget(b as u32);
+        } else {
+            self.i64c(0);
+        }
+        if let Some(i) = m.index {
+            self.gget(i as u32);
+            self.i64c(m.scale as i64);
+            self.b(op::I64_MUL);
+            self.b(op::I64_ADD);
+        }
+        if m.disp != 0 {
+            self.i64c(m.disp);
+            self.b(op::I64_ADD);
+        }
+        self.b(op::I32_WRAP_I64);
+    }
+    /// Push the 64-bit value of an operand (reg global, immediate,
+    /// or memory load). XMM operands are not scalar — they are handled
+    /// by the SIMD paths and trap here if reached.
     fn push_operand(&mut self, o: &Operand) {
         match o {
             Operand::Reg(r) => self.gget(*r as u32),
             Operand::Imm(v) => self.i64c(*v),
+            Operand::Mem(m) => {
+                self.addr_i32(m);
+                self.b(op::I64_LOAD);
+                self.u(0);
+                self.u(0);
+            }
+            Operand::Xmm(_) => {
+                self.b(op::UNREACHABLE);
+            }
+        }
+    }
+    /// Store the i64 in local `src` into `dst` (register global or
+    /// memory operand). For memory, the address is recomputed — safe
+    /// because no architectural register is written before this point
+    /// in a single instruction.
+    fn store_from_local(&mut self, dst: &Operand, src: u32) {
+        match dst {
+            Operand::Reg(r) => {
+                self.lget(src);
+                self.gset(*r as u32);
+            }
+            Operand::Mem(m) => {
+                self.addr_i32(m);
+                self.lget(src);
+                self.b(op::I64_STORE);
+                self.u(0);
+                self.u(0);
+            }
+            Operand::Imm(_) | Operand::Xmm(_) => {
+                self.b(op::UNREACHABLE);
+            }
         }
     }
 }
@@ -297,16 +368,22 @@ impl JitCompiler {
             params: vec![],
             results: vec![ValType::I64],
         });
-        // Globals: 16×i64 GPRs + 4×i32 flags.
+        // Globals: 16×i64 GPRs + 6×i32 flags + 16×2 i64 XMM lanes.
         for _ in 0..N_GPRS {
             module.globals.push(Global {
                 ty: ValType::I64,
                 init: 0,
             });
         }
-        for _ in 0..4 {
+        for _ in 0..N_FLAGS {
             module.globals.push(Global {
                 ty: ValType::I32,
+                init: 0,
+            });
+        }
+        for _ in 0..32 {
+            module.globals.push(Global {
+                ty: ValType::I64,
                 init: 0,
             });
         }
@@ -415,20 +492,29 @@ impl JitCompiler {
         match &ins.kind {
             Nop => {}
             Mov { dst, src } => {
-                let Operand::Reg(dr) = dst else {
-                    return Err(JitError::Unsupported("mov to imm".into()));
-                };
-                e.push_operand(src);
-                e.gset(*dr as u32);
+                if let Operand::Mem(m) = dst {
+                    // [addr, value] order for the store.
+                    e.addr_i32(m);
+                    e.push_operand(src);
+                    e.b(op::I64_STORE);
+                    e.u(0);
+                    e.u(0);
+                } else if matches!(dst, Operand::Xmm(_)) {
+                    return Err(JitError::Unsupported("scalar mov to xmm".into()));
+                } else {
+                    e.push_operand(src);
+                    if let Operand::Reg(dr) = dst {
+                        e.gset(*dr as u32);
+                    } else {
+                        return Err(JitError::Unsupported("mov to imm".into()));
+                    }
+                }
             }
             Movzx { dst, src, bits } | Movsx { dst, src, bits } => {
                 let Operand::Reg(dr) = dst else {
-                    return Err(JitError::Unsupported("movzx/movsx to imm".into()));
+                    return Err(JitError::Unsupported("movzx/movsx to imm/mem".into()));
                 };
-                let Operand::Reg(sr) = src else {
-                    return Err(JitError::Unsupported("movzx/movsx from imm".into()));
-                };
-                e.gget(*sr as u32);
+                e.push_operand(src);
                 match bits {
                     8 => {
                         if matches!(ins.kind, Movzx { .. }) {
@@ -481,15 +567,15 @@ impl JitCompiler {
                 self.emit_unary(e, &ins.kind)?;
             }
             Push(r) => {
-                // addr = rsp - 8; [addr] = reg; rsp = addr
-                let Operand::Reg(g) = r else {
-                    return Err(JitError::Unsupported("push imm".into()));
-                };
+                // addr = rsp - 8; [addr] = operand; rsp = addr
+                if matches!(r, Operand::Xmm(_)) {
+                    return Err(JitError::Unsupported("push xmm".into()));
+                }
                 e.gget(G_RSP);
                 e.i64c(-8);
                 e.b(op::I64_ADD);
                 e.b(op::I32_WRAP_I64); // addr i32 — stack: [addr]
-                e.gget(*g as u32); // value i64 — stack: [addr, val]
+                e.push_operand(r); // value i64 — stack: [addr, val]
                 e.b(op::I64_STORE);
                 e.u(0);
                 e.u(0);
@@ -500,10 +586,24 @@ impl JitCompiler {
                 e.gset(G_RSP);
             }
             Pop(r) => {
-                let Operand::Reg(g) = r else {
-                    return Err(JitError::Unsupported("pop imm".into()));
-                };
-                self.emit_pop(e, *g as u32);
+                if matches!(r, Operand::Xmm(_)) {
+                    return Err(JitError::Unsupported("pop xmm".into()));
+                }
+                self.emit_pop(e, r);
+            }
+            SimdMov { dst, src } => {
+                self.emit_simd_mov(e, dst, src)?;
+            }
+            SimdMovd {
+                xmm,
+                gpr,
+                to_xmm,
+                bits,
+            } => {
+                self.emit_simd_movd(e, xmm, gpr, *to_xmm, *bits)?;
+            }
+            SimdAlu { op: sop, dst, src } => {
+                self.emit_simd_alu(e, *sop, dst, src)?;
             }
             Jmp { target } => {
                 e.i64c(self.target_value(*target, code_len));
@@ -556,6 +656,7 @@ impl JitCompiler {
     }
 
     /// ALU op with flags (add/sub/xor/and/or/mul).
+    /// `dst` may be a register or a memory operand (read-modify-write).
     fn emit_alu(
         &mut self,
         e: &mut Emit,
@@ -563,9 +664,9 @@ impl JitCompiler {
         dst: &Operand,
         src: &Operand,
     ) -> JitResult<()> {
-        let Operand::Reg(dr) = dst else {
-            return Err(JitError::Unsupported("alu dst imm".into()));
-        };
+        if matches!(dst, Operand::Imm(_) | Operand::Xmm(_)) {
+            return Err(JitError::Unsupported("alu dst imm/xmm".into()));
+        }
         let opcode = match ins.kind {
             InstrKind::Add { .. } => op::I64_ADD,
             InstrKind::Sub { .. } => op::I64_SUB,
@@ -576,7 +677,7 @@ impl JitCompiler {
             _ => unreachable!(),
         };
         // a → L_A, b → L_B, res → L_R
-        e.gget(*dr as u32);
+        e.push_operand(dst);
         e.b(op::LOCAL_SET);
         e.u(L_A);
         e.push_operand(src);
@@ -587,17 +688,10 @@ impl JitCompiler {
         e.b(opcode);
         e.b(op::LOCAL_TEE);
         e.u(L_R);
-        e.gset(*dr as u32);
-        // Flags: ZF = (res == 0); SF = res < 0.
-        e.lget(L_R);
-        e.b(op::I64_EQZ);
-        e.gset(G_ZF);
-        e.lget(L_R);
-        e.i64c(63);
-        e.b(op::I64_SHR_S);
-        e.b(op::I32_WRAP_I64);
-        e.gset(G_SF);
-        // CF/OF: precise for sub; for add compute CF; logic/mul → 0.
+        e.store_from_local(dst, L_R);
+        // ZF = (res == 0); SF = res < 0; PF = even parity of low byte.
+        self.emit_szp(e);
+        // CF/OF/AF per operation.
         match ins.kind {
             InstrKind::Sub { .. } => {
                 // CF = a <u b ; OF = ((a^b) & (a^res)) >> 63
@@ -616,35 +710,109 @@ impl JitCompiler {
                 e.b(op::I64_SHR_S);
                 e.b(op::I32_WRAP_I64);
                 e.gset(G_OF);
+                self.emit_af(e);
             }
             InstrKind::Add { .. } => {
-                // CF = res <u a (unsigned wrap); OF ≈ sign rule.
+                // CF = res <u a (unsigned wrap);
+                // OF = ((a^res) & (b^res)) >> 63 for addition.
                 e.lget(L_R);
                 e.lget(L_A);
                 e.b(op::I64_LT_U);
                 e.gset(G_CF);
-                e.i32c(0);
+                e.lget(L_A);
+                e.lget(L_R);
+                e.b(op::I64_XOR);
+                e.lget(L_B);
+                e.lget(L_R);
+                e.b(op::I64_XOR);
+                e.b(op::I64_AND);
+                e.i64c(63);
+                e.b(op::I64_SHR_S);
+                e.b(op::I32_WRAP_I64);
                 e.gset(G_OF);
+                self.emit_af(e);
             }
             _ => {
+                // Logic ops and mul: CF/OF/AF cleared (mul's flags are
+                // architecturally undefined — we define them as 0).
                 e.i32c(0);
                 e.gset(G_CF);
                 e.i32c(0);
                 e.gset(G_OF);
+                e.i32c(0);
+                e.gset(G_AF);
             }
         }
         Ok(())
     }
 
-    /// cmp a, b → flags for a - b.
+    /// ZF/SF/PF from L_R (result local).
+    fn emit_szp(&mut self, e: &mut Emit) {
+        e.lget(L_R);
+        e.b(op::I64_EQZ);
+        e.gset(G_ZF);
+        e.lget(L_R);
+        e.i64c(63);
+        e.b(op::I64_SHR_S);
+        e.b(op::I32_WRAP_I64);
+        e.gset(G_SF);
+        self.emit_pf(e);
+    }
+
+    /// PF = even parity of the low byte of L_R.\n    /// Nibble-fold then lookup in 0x9669: bit i = 1 iff nibble i has
+    /// *even* parity (the complement of the classic 0x6996 odd table).
+    fn emit_pf(&mut self, e: &mut Emit) {
+        // t = res & 0xFF
+        e.lget(L_R);
+        e.i64c(0xFF);
+        e.b(op::I64_AND);
+        e.b(op::LOCAL_SET);
+        e.u(L_T);
+        // t ^= t >> 4  (fold nibbles)
+        e.lget(L_T);
+        e.lget(L_T);
+        e.i64c(4);
+        e.b(op::I64_SHR_U);
+        e.b(op::I64_XOR);
+        e.b(op::LOCAL_SET);
+        e.u(L_T);
+        // t &= 0xF
+        e.lget(L_T);
+        e.i64c(0xF);
+        e.b(op::I64_AND);
+        e.b(op::LOCAL_SET);
+        e.u(L_T);
+        // pf = (0x9669 >> t) & 1
+        e.i64c(0x9669);
+        e.lget(L_T);
+        e.b(op::I64_SHR_U);
+        e.i64c(1);
+        e.b(op::I64_AND);
+        e.b(op::I32_WRAP_I64);
+        e.gset(G_PF);
+    }
+
+    /// AF = bit 4 of (a ^ b ^ res) — standard add/sub aux-carry.
+    fn emit_af(&mut self, e: &mut Emit) {
+        e.lget(L_A);
+        e.lget(L_B);
+        e.b(op::I64_XOR);
+        e.lget(L_R);
+        e.b(op::I64_XOR);
+        e.i64c(4);
+        e.b(op::I64_SHR_U);
+        e.i64c(1);
+        e.b(op::I64_AND);
+        e.b(op::I32_WRAP_I64);
+        e.gset(G_AF);
+    }
+
+    /// cmp a, b → flags for a - b (no writeback).
     fn emit_cmp(&mut self, e: &mut Emit, a: &Operand, b: &Operand, _sub: bool) -> JitResult<()> {
-        // Reuse alu path semantics without writeback: emulate via
-        // temps. dst operand must be a reg for our lowering; imm dst
-        // is meaningless for cmp anyway (cmp imm, x not decoded).
-        let Operand::Reg(dr) = a else {
-            return Err(JitError::Unsupported("cmp imm dst".into()));
-        };
-        e.gget(*dr as u32);
+        if matches!(a, Operand::Imm(_) | Operand::Xmm(_)) {
+            return Err(JitError::Unsupported("cmp imm/xmm lhs".into()));
+        }
+        e.push_operand(a);
         e.b(op::LOCAL_SET);
         e.u(L_A);
         e.push_operand(b);
@@ -655,16 +823,9 @@ impl JitCompiler {
         e.b(op::I64_SUB);
         e.b(op::LOCAL_SET);
         e.u(L_R);
-        // ZF/SF
-        e.lget(L_R);
-        e.b(op::I64_EQZ);
-        e.gset(G_ZF);
-        e.lget(L_R);
-        e.i64c(63);
-        e.b(op::I64_SHR_S);
-        e.b(op::I32_WRAP_I64);
-        e.gset(G_SF);
-        // CF = a <u b ; OF = ((a^b)&(a^res))>>63
+        // ZF/SF/PF
+        self.emit_szp(e);
+        // CF = a <u b ; OF = ((a^b)&(a^res))>>63 ; AF
         e.lget(L_A);
         e.lget(L_B);
         e.b(op::I64_LT_U);
@@ -680,10 +841,11 @@ impl JitCompiler {
         e.b(op::I64_SHR_S);
         e.b(op::I32_WRAP_I64);
         e.gset(G_OF);
+        self.emit_af(e);
         Ok(())
     }
 
-    /// test a, b → ZF/SF from a&b; CF=OF=0.
+    /// test a, b → ZF/SF/PF from a&b; CF=OF=AF=0.
     fn emit_test(&mut self, e: &mut Emit, a: &Operand, b: &Operand) -> JitResult<()> {
         e.push_operand(a);
         e.b(op::LOCAL_SET);
@@ -696,22 +858,19 @@ impl JitCompiler {
         e.b(op::I64_AND);
         e.b(op::LOCAL_SET);
         e.u(L_R);
-        e.lget(L_R);
-        e.b(op::I64_EQZ);
-        e.gset(G_ZF);
-        e.lget(L_R);
-        e.i64c(63);
-        e.b(op::I64_SHR_S);
-        e.b(op::I32_WRAP_I64);
-        e.gset(G_SF);
+        self.emit_szp(e);
         e.i32c(0);
         e.gset(G_CF);
         e.i32c(0);
         e.gset(G_OF);
+        e.i32c(0);
+        e.gset(G_AF);
         Ok(())
     }
 
-    /// inc/dec/neg/not on a register operand.
+    /// inc/dec/neg/not on a register or memory operand.
+    /// inc/dec/neg update ZF/SF/PF/AF/OF (CF preserved for inc/dec);
+    /// not touches no flags.
     fn emit_unary(&mut self, e: &mut Emit, kind: &InstrKind) -> JitResult<()> {
         let (r, is_dec, is_neg, is_not) = match kind {
             InstrKind::Inc(r) => (r, false, false, false),
@@ -720,50 +879,91 @@ impl JitCompiler {
             InstrKind::Not(r) => (r, false, false, true),
             _ => unreachable!(),
         };
-        let Operand::Reg(g) = r else {
-            return Err(JitError::Unsupported("unary on imm".into()));
-        };
-        e.gget(*g as u32);
+        if matches!(r, Operand::Imm(_) | Operand::Xmm(_)) {
+            return Err(JitError::Unsupported("unary on imm/xmm".into()));
+        }
+        // old → L_A
+        e.push_operand(r);
         e.b(op::LOCAL_SET);
         e.u(L_A);
+        let mut res_in_lr = false;
         match (is_dec, is_neg, is_not) {
             (false, false, false) => {
+                // inc: res = a + 1
                 e.lget(L_A);
                 e.i64c(1);
                 e.b(op::I64_ADD);
+                e.b(op::LOCAL_TEE);
+                e.u(L_R);
+                res_in_lr = true;
             }
             (true, false, false) => {
+                // dec: res = a - 1
                 e.lget(L_A);
                 e.i64c(1);
                 e.b(op::I64_SUB);
+                e.b(op::LOCAL_TEE);
+                e.u(L_R);
+                res_in_lr = true;
             }
             (false, true, false) => {
-                e.lget(L_A);
+                // neg: res = 0 - a
                 e.i64c(0);
+                e.lget(L_A);
                 e.b(op::I64_SUB);
+                e.b(op::LOCAL_TEE);
+                e.u(L_R);
+                res_in_lr = true;
             }
             (false, false, true) => {
+                // not: res = a ^ -1
                 e.lget(L_A);
                 e.i64c(-1);
-                e.b(op::I64_XOR); // not x = x XOR -1
+                e.b(op::I64_XOR);
+                e.b(op::LOCAL_TEE);
+                e.u(L_R);
             }
             _ => unreachable!(),
         }
-        e.gset(*g as u32);
-        // Minimal flags for inc/dec: ZF/SF only.
-        if !is_neg && !is_not {
-            e.gget(*g as u32);
-            e.b(op::LOCAL_SET);
-            e.u(L_R);
-            e.lget(L_R);
-            e.b(op::I64_EQZ);
-            e.gset(G_ZF);
-            e.lget(L_R);
-            e.i64c(63);
-            e.b(op::I64_SHR_S);
-            e.b(op::I32_WRAP_I64);
-            e.gset(G_SF);
+        e.store_from_local(r, L_R);
+        if is_not {
+            return Ok(()); // not affects no flags
         }
+        // ZF/SF/PF from result.
+        self.emit_szp(e);
+        if is_neg {
+            // neg sets all flags: CF = a != 0; OF = a == i64::MIN;
+            // AF ≈ ((a ^ res) >> 4) & 1.
+            e.lget(L_A);
+            e.b(op::I64_EQZ);
+            e.b(op::I32_EQZ); // cf = !eqz(a) = a!=0
+            e.gset(G_CF);
+            e.lget(L_A);
+            e.i64c(i64::MIN);
+            e.b(op::I64_EQ);
+            e.gset(G_OF);
+            // af = ((a ^ res) >> 4) & 1 — reuse emit_af with b=0:
+            // (a ^ 0 ^ res) == (a ^ res); emit_af uses L_B, so set
+            // L_B = 0 first.
+            e.i64c(0);
+            e.b(op::LOCAL_SET);
+            e.u(L_B);
+            self.emit_af(e);
+        } else {
+            // inc/dec: OF = boundary crossing; AF via (a^1^res)>>4&1
+            // approximation; CF preserved (not written).
+            let boundary = if is_dec { i64::MIN } else { i64::MAX };
+            e.lget(L_A);
+            e.i64c(boundary);
+            e.b(op::I64_EQ);
+            e.gset(G_OF);
+            // b = +1 for inc, -1 for dec in the aux formula.
+            e.i64c(if is_dec { -1 } else { 1 });
+            e.b(op::LOCAL_SET);
+            e.u(L_B);
+            self.emit_af(e);
+        }
+        let _ = res_in_lr;
         Ok(())
     }
 
@@ -835,10 +1035,11 @@ impl JitCompiler {
                 e.b(op::I32_EQZ);
             }
             Cond::P => {
-                e.i32c(0); // PF untracked → parity clear
+                e.gget(G_PF);
             }
             Cond::Np => {
-                e.i32c(1);
+                e.gget(G_PF);
+                e.b(op::I32_EQZ);
             }
             Cond::L => {
                 // sf != of
@@ -872,21 +1073,194 @@ impl JitCompiler {
         }
     }
 
-    /// pop r64 — val=[rsp]; rsp+=8; r=val (uses L_R temp).
-    fn emit_pop(&mut self, e: &mut Emit, g: u32) {
+    /// pop operand — val=[rsp]; rsp+=8; dst=val.
+    /// Register and memory destinations are supported.
+    fn emit_pop(&mut self, e: &mut Emit, dst: &Operand) {
         e.gget(G_RSP);
         e.b(op::I32_WRAP_I64);
         e.b(op::I64_LOAD);
         e.u(0);
         e.u(0); // [val]
         e.b(op::LOCAL_TEE);
-        e.u(L_R); // keep val in local, still on stack? tee leaves copy
-                  // stack still has val; store to reg then bump rsp
-        e.gset(g);
+        e.u(L_R); // keep val in local
+        e.b(op::DROP); // consume the stack copy
+                       // bump rsp
         e.gget(G_RSP);
         e.i64c(8);
         e.b(op::I64_ADD);
         e.gset(G_RSP);
+        // store popped value into dst (reg global or memory).
+        match dst {
+            Operand::Reg(g) => {
+                e.lget(L_R);
+                e.gset(*g as u32);
+            }
+            Operand::Mem(m) => {
+                e.addr_i32(m);
+                e.lget(L_R);
+                e.b(op::I64_STORE);
+                e.u(0);
+                e.u(0);
+            }
+            _ => {
+                e.b(op::UNREACHABLE);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // SIMD (SSE2 integer subset): xmm = two i64 lane globals.
+    // ------------------------------------------------------------------
+
+    /// Global index of xmm `n`'s low lane.
+    fn xmm_lo(n: u8) -> u32 {
+        G_XMM0 + 2 * n as u32
+    }
+
+    /// Push one 64-bit lane of an xmm/memory source onto the stack.
+    /// `lane` is 0 (low) or 1 (high); memory reads at addr+8*lane.
+    fn push_xmm_lane(&mut self, e: &mut Emit, src: &Operand, lane: u32) {
+        match src {
+            Operand::Xmm(n) => {
+                e.gget(Self::xmm_lo(*n) + lane);
+            }
+            Operand::Mem(m) => {
+                e.addr_i32(m);
+                if lane != 0 {
+                    e.i64c(8);
+                    e.b(op::I64_ADD);
+                    e.b(op::I32_WRAP_I64);
+                }
+                e.b(op::I64_LOAD);
+                e.u(0);
+                e.u(0);
+            }
+            _ => {
+                e.b(op::UNREACHABLE);
+            }
+        }
+    }
+
+    /// Store local `val` into one lane of an xmm/memory destination.
+    fn store_xmm_lane(&mut self, e: &mut Emit, dst: &Operand, lane: u32, val: u32) {
+        match dst {
+            Operand::Xmm(n) => {
+                e.lget(val);
+                e.gset(Self::xmm_lo(*n) + lane);
+            }
+            Operand::Mem(m) => {
+                e.addr_i32(m);
+                if lane != 0 {
+                    e.i64c(8);
+                    e.b(op::I64_ADD);
+                    e.b(op::I32_WRAP_I64);
+                }
+                e.lget(val);
+                e.b(op::I64_STORE);
+                e.u(0);
+                e.u(0);
+            }
+            _ => {
+                e.b(op::UNREACHABLE);
+            }
+        }
+    }
+
+    /// movdqa/movdqu: 128-bit copy xmm↔xmm or xmm↔m128.
+    fn emit_simd_mov(&mut self, e: &mut Emit, dst: &Operand, src: &Operand) -> JitResult<()> {
+        for lane in 0..2 {
+            // value → L_R, then store
+            self.push_xmm_lane(e, src, lane);
+            e.b(op::LOCAL_SET);
+            e.u(L_R);
+            self.store_xmm_lane(e, dst, lane, L_R);
+        }
+        Ok(())
+    }
+
+    /// movd/movq between xmm low lane and a gpr/mem operand.
+    /// `to_xmm`: gpr → xmm (zeroes high lane); else xmm → gpr.
+    fn emit_simd_movd(
+        &mut self,
+        e: &mut Emit,
+        xmm: &Operand,
+        gpr: &Operand,
+        to_xmm: bool,
+        bits: u8,
+    ) -> JitResult<()> {
+        let Operand::Xmm(xn) = xmm else {
+            return Err(JitError::Unsupported("movd xmm side not xmm".into()));
+        };
+        let mask = if bits == 64 { -1i64 } else { 0xFFFF_FFFF };
+        if to_xmm {
+            // gpr → xmm.lo = gpr & mask ; xmm.hi = 0
+            e.push_operand(gpr);
+            e.i64c(mask);
+            e.b(op::I64_AND);
+            e.b(op::LOCAL_SET);
+            e.u(L_R);
+            e.lget(L_R);
+            e.gset(Self::xmm_lo(*xn));
+            e.i64c(0);
+            e.gset(Self::xmm_lo(*xn) + 1);
+        } else {
+            // xmm.lo & mask → gpr/mem
+            e.gget(Self::xmm_lo(*xn));
+            e.i64c(mask);
+            e.b(op::I64_AND);
+            e.b(op::LOCAL_SET);
+            e.u(L_R);
+            match gpr {
+                Operand::Reg(g) => {
+                    e.lget(L_R);
+                    e.gset(*g as u32);
+                }
+                Operand::Mem(m) => {
+                    e.addr_i32(m);
+                    e.lget(L_R);
+                    e.b(op::I64_STORE);
+                    e.u(0);
+                    e.u(0);
+                }
+                _ => {
+                    return Err(JitError::Unsupported("movd gpr side imm/xmm".into()));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Lane-wise i64 logic/arithmetic: dst op= src (xmm or m128).
+    fn emit_simd_alu(
+        &mut self,
+        e: &mut Emit,
+        sop: SimdOp,
+        dst: &Operand,
+        src: &Operand,
+    ) -> JitResult<()> {
+        let wop = match sop {
+            SimdOp::Paddq => op::I64_ADD,
+            SimdOp::Psubq => op::I64_SUB,
+            SimdOp::Pand => op::I64_AND,
+            SimdOp::Por => op::I64_OR,
+            SimdOp::Pxor => op::I64_XOR,
+        };
+        for lane in 0..2 {
+            // dst_val → L_A, src_val → L_B, res → L_R → store
+            self.push_xmm_lane(e, dst, lane);
+            e.b(op::LOCAL_SET);
+            e.u(L_A);
+            self.push_xmm_lane(e, src, lane);
+            e.b(op::LOCAL_SET);
+            e.u(L_B);
+            e.lget(L_A);
+            e.lget(L_B);
+            e.b(wop);
+            e.b(op::LOCAL_SET);
+            e.u(L_R);
+            self.store_xmm_lane(e, dst, lane, L_R);
+        }
+        Ok(())
     }
 }
 

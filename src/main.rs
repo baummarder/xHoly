@@ -139,6 +139,16 @@ struct Args {
     #[arg(long, value_name = "N")]
     max_steps: Option<u64>,
 
+    /// Enable the x86-64 → WASM JIT branch for x86-64 guest code
+    /// (Phase 14). Runs parallel to the ARM64 interpreter; falls back
+    /// to the scalar x86 interpreter on JIT failure.
+    #[arg(long)]
+    enable_jit: bool,
+
+    /// Disable the JIT interpreter fallback (JIT errors become fatal).
+    #[arg(long)]
+    jit_no_fallback: bool,
+
     /// Run the native C++ Win32 window manager demo (--native-wm).
     /// Windows only.
     #[arg(long)]
@@ -425,6 +435,14 @@ fn main() {
     config.save_default().ok();
 
     let mut emu = Emulator::new(&image, config);
+    if args.enable_jit {
+        emu.enable_jit(xholy::jit::JitConfig {
+            enabled: true,
+            fallback_to_interpreter: !args.jit_no_fallback,
+            max_instructions: args.max_steps.unwrap_or(10_000_000),
+            ..Default::default()
+        });
+    }
     let frames = emu.run(args.max_frames);
     log::info!("xHoly: rendered {} frames", frames);
 }

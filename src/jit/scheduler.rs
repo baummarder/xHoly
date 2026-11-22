@@ -8,22 +8,48 @@
 //! This is a compile-time scheduling pass over [`X86Instr`]; it does
 //! not model a hardware reorder buffer.
 
-use super::disassembler::{InstrKind, X86Instr};
+use super::disassembler::{InstrKind, Operand, X86Instr};
 use std::collections::HashSet;
 
 /// Registers an instruction reads (conservative).
+/// Memory operands contribute their base/index registers; XMM
+/// registers are keyed at 128+n to avoid colliding with GPRs.
 fn reads(i: &X86Instr) -> HashSet<u8> {
     use super::disassembler::Operand::{self, *};
     use InstrKind::*;
     let mut s = HashSet::new();
-    let reg = |o: &Operand, set: &mut HashSet<u8>| {
-        if let Reg(r) = o {
+    let reg = |o: &Operand, set: &mut HashSet<u8>| match o {
+        Reg(r) => {
             set.insert(*r);
         }
+        Xmm(x) => {
+            set.insert(128 + x);
+        }
+        Mem(m) => {
+            if let Some(b) = m.base {
+                set.insert(b);
+            }
+            if let Some(ix) = m.index {
+                set.insert(ix);
+            }
+        }
+        Imm(_) => {}
+    };
+    let pair = |a: &Operand, b: &Operand, set: &mut HashSet<u8>| {
+        reg(a, set);
+        reg(b, set);
     };
     match &i.kind {
-        Mov { dst: _, src } | Movzx { dst: _, src, .. } | Movsx { dst: _, src, .. } => {
-            reg(src, &mut s)
+        Mov { dst: _, src }
+        | Movzx { dst: _, src, .. }
+        | Movsx { dst: _, src, .. }
+        | SimdMov { dst: _, src }
+        | SimdAlu { dst: _, src, .. } => reg(src, &mut s),
+        SimdMovd {
+            xmm, gpr, to_xmm, ..
+        } => {
+            // to_xmm reads the gpr side; the reverse reads xmm.
+            reg(if *to_xmm { gpr } else { xmm }, &mut s);
         }
         Add { dst: _, src }
         | Sub { dst: _, src }
@@ -33,10 +59,7 @@ fn reads(i: &X86Instr) -> HashSet<u8> {
         | Mul { dst: _, src } => {
             reg(src, &mut s);
         }
-        Cmp { a, b } | Test { a, b } => {
-            reg(a, &mut s);
-            reg(b, &mut s);
-        }
+        Cmp { a, b } | Test { a, b } => pair(a, b, &mut s),
         Inc(r) | Dec(r) | Neg(r) | Not(r) | Push(r) | Pop(r) => reg(r, &mut s),
         _ => {}
     }
@@ -51,7 +74,8 @@ fn reads(i: &X86Instr) -> HashSet<u8> {
         | Inc(dst)
         | Dec(dst)
         | Neg(dst)
-        | Not(dst) => reg(dst, &mut s),
+        | Not(dst)
+        | SimdAlu { dst, .. } => reg(dst, &mut s),
         _ => {}
     }
     s
@@ -62,30 +86,66 @@ fn writes(i: &X86Instr) -> HashSet<u8> {
     use super::disassembler::Operand::*;
     use InstrKind::*;
     let mut s = HashSet::new();
-    match &i.kind {
-        Mov { dst, .. } | Movzx { dst, .. } | Movsx { dst, .. } => {
-            if let Reg(r) = dst {
-                s.insert(*r);
-            }
+    let put = |o: &Operand, set: &mut HashSet<u8>| match o {
+        Reg(r) => {
+            set.insert(*r);
         }
+        Xmm(x) => {
+            set.insert(128 + x);
+        }
+        _ => {}
+    };
+    match &i.kind {
+        Mov { dst, .. } | Movzx { dst, .. } | Movsx { dst, .. } | SimdMov { dst, .. } => {
+            put(dst, &mut s);
+        }
+        SimdMovd {
+            xmm, gpr, to_xmm, ..
+        } => {
+            put(xmm, &mut s);
+            put(gpr, &mut s);
+            let _ = to_xmm;
+        }
+        SimdAlu { dst, .. } => put(dst, &mut s),
         Add { dst, .. }
         | Sub { dst, .. }
         | Xor { dst, .. }
         | And { dst, .. }
         | Or { dst, .. }
-        | Mul { dst, .. } => {
-            if let Reg(r) = dst {
-                s.insert(*r);
-            }
-        }
-        Inc(r) | Dec(r) | Neg(r) | Not(r) | Pop(r) => {
-            if let Reg(x) = r {
-                s.insert(*x);
-            }
-        }
+        | Mul { dst, .. } => put(dst, &mut s),
+        Inc(r) | Dec(r) | Neg(r) | Not(r) | Pop(r) => put(r, &mut s),
         _ => {}
     }
     s
+}
+
+/// Whether the instruction touches memory or the stack — memory
+/// operations are ordered conservatively (barrier) because the
+/// scheduler does not model aliasing.
+fn touches_mem(i: &X86Instr) -> bool {
+    use super::disassembler::Operand::*;
+    use InstrKind::*;
+    fn has_mem(o: &Operand) -> bool {
+        matches!(o, Mem(_))
+    }
+    match &i.kind {
+        Mov { dst, src }
+        | Movzx { dst, src, .. }
+        | Movsx { dst, src, .. }
+        | SimdMov { dst, src }
+        | SimdAlu { dst, src, .. } => has_mem(dst) || has_mem(src),
+        SimdMovd { xmm, gpr, .. } => has_mem(xmm) || has_mem(gpr),
+        Add { dst, src }
+        | Sub { dst, src }
+        | Xor { dst, src }
+        | And { dst, src }
+        | Or { dst, src }
+        | Mul { dst, src }
+        | Cmp { a: dst, b: src }
+        | Test { a: dst, b: src } => has_mem(dst) || has_mem(src),
+        Inc(r) | Dec(r) | Neg(r) | Not(r) | Push(r) | Pop(r) => has_mem(r),
+        _ => false,
+    }
 }
 
 /// Whether the instruction is a scheduling barrier.
@@ -97,7 +157,10 @@ fn is_barrier(i: &X86Instr) -> bool {
             | InstrKind::Call { .. }
             | InstrKind::Ret
             | InstrKind::Syscall
-    )
+            // push/pop mutate rsp and memory — never reorder.
+            | InstrKind::Push(_)
+            | InstrKind::Pop(_)
+    ) || touches_mem(i)
 }
 
 /// Scheduler with a bounded reorder window.

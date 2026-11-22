@@ -71,6 +71,18 @@ impl Emulator {
         &self.config
     }
 
+    /// Enable the x86-64 → WASM JIT branch on the emulation core.
+    /// The JIT runs parallel to the ARM64 interpreter and is used by
+    /// [`core::EmulationCore::compile_and_run`] for x86-64 guest code.
+    pub fn enable_jit(&mut self, jit_config: jit::JitConfig) {
+        self.core.enable_jit(jit_config);
+    }
+
+    /// Access the emulation core (e.g. for `compile_and_run`).
+    pub fn core_mut(&mut self) -> &mut core::EmulationCore {
+        &mut self.core
+    }
+
     /// Take a screenshot of the current framebuffer and write it to `path`.
     pub fn screenshot(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
         let rgba = self.gpu.readback_rgba();
