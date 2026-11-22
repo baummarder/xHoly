@@ -2,26 +2,38 @@
   <title id="title">xHoly window icon</title>
   <desc id="desc">xHoly window icon: bold gold X with a small crucifix at the top right on a dark background, no frame.</desc>
 
-  <rect width="512" height="512" rx="96" fill="#1a1a1a"/>
-  <circle cx="256" cy="256" r="180" fill="none" stroke="#FFD700" stroke-width="9" opacity="0.85"/>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="30%" r="90%">
+      <stop offset="0%" stop-color="#262626"/>
+      <stop offset="100%" stop-color="#141414"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe680"/>
+      <stop offset="50%" stop-color="#ffd700"/>
+      <stop offset="100%" stop-color="#d9a800"/>
+    </linearGradient>
+  </defs>
 
-  <!-- The X: two thick gold bars crossing at the center -->
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <circle cx="256" cy="256" r="176" fill="none" stroke="url(#gold)" stroke-width="9" opacity="0.85"/>
+
+  <!-- The X -->
   <g transform="translate(256 256)">
     <g transform="rotate(-45)">
-      <rect x="-30" y="-118" width="60" height="236" rx="15" fill="#FFD700"/>
+      <rect x="-30" y="-116" width="60" height="232" rx="15" fill="url(#gold)"/>
     </g>
     <g transform="rotate(45)">
-      <rect x="-30" y="-118" width="60" height="236" rx="15" fill="#FFD700"/>
+      <rect x="-30" y="-116" width="60" height="232" rx="15" fill="url(#gold)"/>
     </g>
   </g>
 
-  <circle cx="256" cy="256" r="27" fill="#1a1a1a"/>
-  <circle cx="256" cy="256" r="27" fill="none" stroke="#FFD700" stroke-width="8"/>
-  <circle cx="256" cy="256" r="8" fill="#FFD700"/>
+  <circle cx="256" cy="256" r="27" fill="#141414"/>
+  <circle cx="256" cy="256" r="27" fill="none" stroke="url(#gold)" stroke-width="8"/>
+  <circle cx="256" cy="256" r="8" fill="url(#gold)"/>
 
-  <!-- Crucifix at the top right, next to the X -->
-  <g transform="translate(344 144)">
-    <rect x="-15" y="-48" width="30" height="96" rx="8" fill="#FFD700"/>
-    <rect x="-39" y="-37" width="78" height="24" rx="8" fill="#FFD700"/>
+  <!-- Crucifix at the top right -->
+  <g transform="translate(342 140)">
+    <rect x="-16" y="-50" width="32" height="100" rx="8" fill="url(#gold)"/>
+    <rect x="-41" y="-38" width="82" height="25" rx="9" fill="url(#gold)"/>
   </g>
 </svg>

@@ -18,6 +18,7 @@ add_compile_definitions(
 
 add_library(wm_core STATIC
     window_manager.cpp
+    window_manager_ffi.cpp
 )
 set_target_properties(wm_core PROPERTIES OUTPUT_NAME window_manager)
 target_include_directories(wm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw, ImageFilter
 import math, os, sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from render_icons import draw_x, draw_crucifix, GOLD, BG
+from render_icons import draw_x, draw_crucifix, GOLD, BG, _vgrad
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "icons")
 
@@ -21,10 +21,10 @@ WIN_CORNER_R = 96
 WIN_RING_R = 180
 
 # Icon-specific X/crucifix geometry (mirrors the SVGs)
-APP_X_HALF, APP_X_W = 122, 60
-APP_CRUC_POS = (348, 146)
-WIN_X_HALF, WIN_X_W = 118, 60
-WIN_CRUC_POS = (344, 144)
+APP_X_HALF, APP_X_W = 120, 60
+APP_CRUC_POS = (348, 140)
+WIN_X_HALF, WIN_X_W = 116, 60
+WIN_CRUC_POS = (342, 140)
 
 
 def render_app_icon(size: int) -> Image.Image:
@@ -34,8 +34,11 @@ def render_app_icon(size: int) -> Image.Image:
     cx = cy = size / 2.0
 
     # Rounded-square background with subtle vertical sheen
-    d.rounded_rectangle([0, 0, size - 1, size - 1], radius=APP_CORNER_R * s,
-                        fill=BG)
+    bgmask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(bgmask).rounded_rectangle(
+        [0, 0, size - 1, size - 1], radius=APP_CORNER_R * s, fill=255)
+    img.paste(_vgrad(size), (0, 0), bgmask)
+    img = img.convert("RGBA")
     sheen = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     sd = ImageDraw.Draw(sheen)
     sd.rounded_rectangle([0, 0, size - 1, size // 3],
@@ -43,11 +46,14 @@ def render_app_icon(size: int) -> Image.Image:
     img = Image.alpha_composite(img, sheen)
     d = ImageDraw.Draw(img)
 
-    # Sphere ring
+    # Sphere ring + faint inner ring
     ring_w = 10 * s
     d.ellipse([cx - APP_RING_R * s - ring_w / 2, cy - APP_RING_R * s - ring_w / 2,
                cx + APP_RING_R * s + ring_w / 2, cy + APP_RING_R * s + ring_w / 2],
               outline=GOLD, width=max(1, int(ring_w)))
+    d.ellipse([cx - (APP_RING_R - 14) * s, cy - (APP_RING_R - 14) * s,
+               cx + (APP_RING_R - 14) * s, cy + (APP_RING_R - 14) * s],
+              outline=GOLD, width=max(1, int(2 * s)))
 
     # X + crucifix (drawn on a layer so the X can be scaled slightly)
     mark = Image.new("RGBA", (size, size), (0, 0, 0, 0))
@@ -89,15 +95,21 @@ def render_window_icon(size: int) -> Image.Image:
     s = size / 512.0
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
+    bgmask = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(bgmask).rounded_rectangle(
+        [0, 0, size - 1, size - 1], radius=WIN_CORNER_R * s, fill=255)
+    img.paste(_vgrad(size), (0, 0), bgmask)
+    img = img.convert("RGBA")
+    d = ImageDraw.Draw(img)
     cx = cy = size / 2.0
-
-    d.rounded_rectangle([0, 0, size - 1, size - 1], radius=WIN_CORNER_R * s,
-                        fill=BG)
 
     ring_w = 9 * s
     d.ellipse([cx - WIN_RING_R * s - ring_w / 2, cy - WIN_RING_R * s - ring_w / 2,
                cx + WIN_RING_R * s + ring_w / 2, cy + WIN_RING_R * s + ring_w / 2],
               outline=GOLD, width=max(1, int(ring_w)))
+    d.ellipse([cx - (WIN_RING_R - 14) * s, cy - (WIN_RING_R - 14) * s,
+               cx + (WIN_RING_R - 14) * s, cy + (WIN_RING_R - 14) * s],
+              outline=GOLD, width=max(1, int(2 * s)))
 
     mark = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw_x(mark, size, WIN_X_HALF, WIN_X_W)

@@ -1,36 +1,61 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">xHoly logo</title>
-  <desc id="desc">A bold gold X with a small crucifix at the top right, inside a sphere ring on a dark rounded-square background.</desc>
+  <desc id="desc">xHoly logo: a bold gold X with a small glowing crucifix at the top right, inside a sphere ring on a dark rounded-square background.</desc>
 
-  <!-- Background: dark neutral -->
-  <rect width="512" height="512" rx="112" fill="#1a1a1a"/>
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="30%" r="90%">
+      <stop offset="0%" stop-color="#262626"/>
+      <stop offset="55%" stop-color="#1c1c1c"/>
+      <stop offset="100%" stop-color="#141414"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe680"/>
+      <stop offset="45%" stop-color="#ffd700"/>
+      <stop offset="100%" stop-color="#d9a800"/>
+    </linearGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="10" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
 
-  <!-- Xbox-style sphere ring -->
-  <circle cx="256" cy="256" r="196" fill="none" stroke="#FFD700" stroke-width="10" opacity="0.9"/>
+  <!-- Background -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- Sphere ring -->
+  <circle cx="256" cy="256" r="192" fill="none" stroke="url(#gold)" stroke-width="9" opacity="0.9"/>
+  <circle cx="256" cy="256" r="178" fill="none" stroke="#ffd700" stroke-width="2" opacity="0.25"/>
+
+  <!-- Ambient glow behind the mark -->
+  <circle cx="256" cy="256" r="120" fill="#ffd700" opacity="0.07" filter="url(#soft)"/>
 
   <!--
-    The X: two thick gold bars crossing at the center.
-    Half-length 130 keeps the tips inside the ring (130*sqrt(2) ≈ 184 < 196).
+    The X: two tapered gold bars. Each bar is a rotated group containing
+    a main beam plus a brighter top edge for a subtle 3D bevel.
   -->
   <g transform="translate(256 256)">
     <g transform="rotate(-45)">
-      <rect x="-32" y="-130" width="64" height="260" rx="16" fill="#FFD700"/>
+      <rect x="-34" y="-128" width="68" height="256" rx="17" fill="url(#gold)"/>
+      <rect x="-34" y="-128" width="68" height="256" rx="17" fill="none" stroke="#fff3b0" stroke-width="3" opacity="0.35"/>
     </g>
     <g transform="rotate(45)">
-      <rect x="-32" y="-130" width="64" height="260" rx="16" fill="#FFD700"/>
+      <rect x="-34" y="-128" width="68" height="256" rx="17" fill="url(#gold)"/>
+      <rect x="-34" y="-128" width="68" height="256" rx="17" fill="none" stroke="#fff3b0" stroke-width="3" opacity="0.35"/>
     </g>
   </g>
 
-  <!-- Center node where the bars merge -->
-  <circle cx="256" cy="256" r="30" fill="#1a1a1a"/>
-  <circle cx="256" cy="256" r="30" fill="none" stroke="#FFD700" stroke-width="9"/>
-  <circle cx="256" cy="256" r="9" fill="#FFD700"/>
+  <!-- Center node -->
+  <circle cx="256" cy="256" r="34" fill="#141414"/>
+  <circle cx="256" cy="256" r="34" fill="none" stroke="url(#gold)" stroke-width="9"/>
+  <circle cx="256" cy="256" r="10" fill="url(#gold)"/>
 
-  <!-- Crucifix at the top right, next to the X -->
-  <g transform="translate(352 148)">
-    <!-- vertical beam -->
-    <rect x="-17" y="-56" width="34" height="112" rx="9" fill="#FFD700"/>
-    <!-- horizontal beam near the top -->
-    <rect x="-46" y="-42" width="92" height="28" rx="9" fill="#FFD700"/>
+  <!-- Crucifix at the top right with a soft glow -->
+  <g transform="translate(350 140)" filter="url(#glow)">
+    <rect x="-18" y="-58" width="36" height="116" rx="9" fill="url(#gold)"/>
+    <rect x="-48" y="-44" width="96" height="30" rx="10" fill="url(#gold)"/>
+    <rect x="-48" y="-44" width="96" height="30" rx="10" fill="none" stroke="#fff3b0" stroke-width="2" opacity="0.3"/>
   </g>
 </svg>

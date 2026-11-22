@@ -6,3 +6,4 @@
 node_modules/
 .DS_Store
 cpp/window_manager/build/
+tools/__pycache__/

@@ -10,6 +10,7 @@ use crate::core::memory::{GuestAddr, Memory};
 use crate::gpu::GpuContext;
 
 pub mod arm64;
+pub mod interpreter;
 pub mod translator;
 
 /// Number of architectural registers exposed to the translator.

@@ -9,6 +9,18 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [x] Cargo project, lib + binary, CI workflow, benchmarks (criterion)
 - [x] Minimal self-contained ARM64 interpreter (`src/core/cpu/arm64.rs`)
   with decoder, execution loop, embedded Hello-World program, tests
+- [x] **Real AArch64 interpreter** (`src/core/cpu/interpreter.rs`) —
+  actual ARM64 encodings: MOVZ/MOVN/MOVK, ADD/SUB (imm+shifted reg,
+  NZCV), AND/ORR/EOR/ANDS, LDR/STR family, B/BL/B.cond/CBZ/RET/BRK,
+  SVC→kernel. Subset only — no NEON/SIMD/sysregs.
+- [x] **Xbox kernel stub** (`src/core/kernel/`) — VA memory layout,
+  syscall table (Write/CreateThread/Sleep/WriteFile/ReadFile/Yield/
+  Exit/Ticks), round-robin thread scheduler with context snapshots
+- [x] **Game loader** (`src/core/loader.rs`) — flat/XEX-lite images,
+  `xboxconfig.xml` parsing, `GameImage::load_into`
+- [x] **Execution glue** (`src/core/execution.rs`) — `--game PATH`
+  runs a guest image on interpreter+kernel headless; `hello_world_program`
+  assembler proves end-to-end ("Hello, xHoly!" via real SVC)
 - [x] CPU translator stub (`src/core/cpu/translator.rs`)
 - [x] Memory manager, config system (TOML, hot-reload, profiles)
 - [x] Optical-drive subsystem: drive detection, ISO mounting,
@@ -39,6 +51,9 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [x] Scala/JVM + Scala.js runtime bridge skeleton (`scala/`, `build.sbt`)
 - [x] C++17 Win32 window manager (`cpp/window_manager/`) — separate
   native module, pure `windows.h`, own CMake build + tests + demo
+- [x] **C++ WM ↔ Rust FFI** — `extern "C"` API + `build.rs`/`cc` compile,
+  `src/gui/native_wm.rs` safe wrappers, `--native-wm` demo flag
+  (Windows-only; additive — winit GUI still default)
 - [x] Branding: logo (gold X + crucifix), app/window icons, PNG
   exports, favicon
 - [x] Docs: README, INSTALL, CONTRIBUTING, CITATION.cff, whitepaper,
@@ -46,8 +61,16 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 
 ## Does NOT work yet
 
-- [ ] **No actual Xbox game execution** — no x86→host CPU translation,
-  no Xbox kernel/HAL, no game loading beyond optical scanning
+- [ ] **No retail game runs** — the ARM64 interpreter covers a useful
+  subset but real titles need NEON/SIMD, bitmask immediates,
+  load/store pairs, sysregs, and a real XEX section/import parser.
+  `--game` runs *small* ARM64 programs (hello-world works end-to-end).
+- [ ] Kernel syscalls are xHoly-assigned numbers, not the real Xbox
+  XAM/loader ABI; scheduler is cooperative snapshots, not preemptive.
+- [ ] No JIT — interpreter only (a dynasm-style JIT is future work).
+- [ ] Guest can't yet drive the wgpu GUI — no framebuffer→renderer path.
+- [ ] GUI still on winit; `--native-wm` proves the C++ WM works but
+  the main windowed GUI hasn't migrated to it.
 - [ ] GPU translation is a stub — no real DXIL→SPIR-V pipeline; the
   "game preview" renders a synthetic bitmap, not game frames
 - [ ] Save states / load states are UI stubs (slot list only)

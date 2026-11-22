@@ -12,6 +12,8 @@ pub mod frame_pacing;
 pub mod gl_backend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gpu_api_detector;
+#[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+pub mod native_wm;
 pub mod preview;
 pub mod ratatui_backend;
 #[cfg(not(target_arch = "wasm32"))]

@@ -110,6 +110,20 @@ struct Args {
     #[arg(long)]
     headless: bool,
 
+    /// Game image or game directory to execute on the ARM64 interpreter
+    /// + kernel stub (Phase 8). Runs headless regardless of --gui.
+    #[arg(long, value_name = "PATH")]
+    game: Option<PathBuf>,
+
+    /// Maximum guest instructions for --game (default: 1_000_000).
+    #[arg(long, value_name = "N")]
+    max_steps: Option<u64>,
+
+    /// Run the native C++ Win32 window manager demo (--native-wm).
+    /// Windows only.
+    #[arg(long)]
+    native_wm: bool,
+
     /// Maximum number of frames to run (default: unlimited)
     #[arg(long)]
     max_frames: Option<u64>,
@@ -150,6 +164,45 @@ fn main() {
         && args.gpu_api.as_deref() != Some("auto")
     {
         eprintln!("xHoly: warning: unrecognized --gpu-api value, using auto");
+    }
+
+    // Phase 8: native WM demo (Windows only).
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
+    if args.native_wm {
+        let frames = args.max_frames.unwrap_or(600);
+        match xholy::gui::native_wm::run_native_demo(frames) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("xHoly: native WM failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    if args.native_wm {
+        eprintln!("xHoly: --native-wm is Windows-only");
+        std::process::exit(1);
+    }
+
+    // Phase 8: game execution on the ARM64 interpreter + kernel stub.
+    if let Some(path) = &args.game {
+        let steps = args.max_steps.unwrap_or(1_000_000);
+        match xholy::core::execution::run_game_path(path, steps) {
+            Ok(report) => {
+                println!("xHoly: guest exited after {} instructions", report.steps);
+                if !report.output.is_empty() {
+                    print!("{}", String::from_utf8_lossy(&report.output));
+                }
+                for line in &report.kernel_log {
+                    eprintln!("xHoly[kernel]: {line}");
+                }
+                return;
+            }
+            Err(e) => {
+                eprintln!("xHoly: game execution failed: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     let gui_mode = args.gui || args.gui_wgpu;
