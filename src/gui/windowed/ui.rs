@@ -554,6 +554,32 @@ fn blit_rgba(
     }
 }
 
+/// Public fill_rect for the widget layer (Phase 9).
+pub fn fill_rect_pub(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    color: [u8; 4],
+) {
+    fill_rect(fb, fb_w, x, y, w, h, color);
+}
+
+/// Public stroke_rect for the widget layer (Phase 9).
+pub fn stroke_rect_pub(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    color: [u8; 4],
+) {
+    stroke_rect(fb, fb_w, x, y, w, h, color);
+}
+
 fn fill_rect(fb: &mut Framebuffer, fb_w: u32, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
     for yy in y..y.saturating_add(h) {
         for xx in x..x.saturating_add(w) {

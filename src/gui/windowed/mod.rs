@@ -8,6 +8,7 @@
 //! `--gui-headless`.
 
 pub mod input;
+pub mod postfx;
 pub mod preview;
 pub mod renderer;
 pub mod state;
@@ -38,6 +39,8 @@ pub struct WindowApp {
     gpu_api: GpuApi,
     last_tick: Instant,
     fps_ema: f32,
+    /// Consecutive frames below half the FPS limit (Phase-9 perf log).
+    slow_frames: u32,
     /// Frame-rate limiter shared by windowed + headless paths.
     pacer: FramePacer,
     /// Set when the app should exit.
@@ -75,6 +78,7 @@ impl WindowApp {
             gpu_api,
             last_tick: Instant::now(),
             fps_ema: 0.0,
+            slow_frames: 0,
             pacer,
             should_exit: false,
         }
@@ -115,6 +119,21 @@ impl WindowApp {
             self.fps_ema * 0.9 + fps * 0.1
         };
         self.state.fps = self.fps_ema;
+
+        // Phase-9 perf monitoring: log sustained frame drops.
+        if let Some(limit) = self.state.fps_limit {
+            if self.fps_ema > 0.0 && self.fps_ema < limit as f32 * 0.5 {
+                self.slow_frames += 1;
+                if self.slow_frames == 120 {
+                    eprintln!(
+                        "xHoly: perf warning — sustained {}/{} FPS",
+                        self.fps_ema as u32, limit
+                    );
+                }
+            } else {
+                self.slow_frames = 0;
+            }
+        }
     }
 
     /// Apply queued input actions to the state.
@@ -230,10 +249,11 @@ impl ApplicationHandler for WindowApp {
             }
         };
         // Wrap in the GL-fallback type when the detected API is OpenGL.
-        let boxed: Box<dyn GuiFrameRenderer> = match self.gpu_api {
+        let mut boxed: Box<dyn GuiFrameRenderer> = match self.gpu_api {
             GpuApi::OpenGL => Box::new(crate::gui::gl_backend::GlBackend::new(wgpu_renderer)),
             _ => Box::new(wgpu_renderer),
         };
+        boxed.set_postfx(self.config.postfx);
         self.state.resolution = (size.width, size.height);
         self.window = Some(window);
         self.renderer = Some(boxed);
@@ -410,13 +430,13 @@ pub fn run_headless(
         return Ok(last_fb);
     }
 
-    app.renderer = Some(Box::new(
-        renderer::WgpuRenderer::new_offscreen_with_backends(
-            w,
-            h,
-            gpu_api_detector::backends_for(detection.api),
-        )?,
-    ));
+    let mut offscreen = renderer::WgpuRenderer::new_offscreen_with_backends(
+        w,
+        h,
+        gpu_api_detector::backends_for(detection.api),
+    )?;
+    offscreen.set_postfx(app.config.postfx);
+    app.renderer = Some(Box::new(offscreen));
 
     let mut last_fb = Vec::new();
     for _ in 0..frames.max(1) {

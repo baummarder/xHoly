@@ -57,6 +57,10 @@ struct Args {
     #[arg(long, value_name = "API")]
     gpu_api: Option<String>,
 
+    /// Alias for --gpu-api (Phase 9 naming).
+    #[arg(long, value_name = "API", hide = true)]
+    renderer: Option<String>,
+
     /// Force Vulkan backend (alias for --gpu-api vulkan).
     #[arg(long, hide = true)]
     gpu_vulkan: bool,
@@ -105,6 +109,22 @@ struct Args {
     #[arg(long)]
     no_vsync: bool,
 
+    /// Enable bloom post-processing (default: on).
+    #[arg(long)]
+    bloom: bool,
+
+    /// Disable bloom post-processing.
+    #[arg(long)]
+    no_bloom: bool,
+
+    /// Tone mapping: linear | reinhard | filmic | aces.
+    #[arg(long, value_name = "KIND")]
+    tone_mapping: Option<String>,
+
+    /// Anti-aliasing: off | fxaa | msaa4.
+    #[arg(long, value_name = "METHOD")]
+    aa: Option<String>,
+
     /// Run without any UI (explicit headless mode; this is the default
     /// when a game image is supplied without --gui).
     #[arg(long)]
@@ -148,6 +168,7 @@ fn main() {
     let gpu_pref = args
         .gpu_api
         .as_deref()
+        .or(args.renderer.as_deref())
         .and_then(GpuApiPreference::parse)
         .or(if args.gpu_vulkan || args.gui_vulkan {
             Some(GpuApiPreference::Vulkan)
@@ -243,6 +264,27 @@ fn main() {
         }
         if args.no_vsync {
             gui_config.vsync = false;
+        }
+        // Phase 9 post-processing flags.
+        if args.bloom {
+            gui_config.postfx.bloom = true;
+        }
+        if args.no_bloom {
+            gui_config.postfx.bloom = false;
+        }
+        if let Some(t) = &args.tone_mapping {
+            match xholy::gui::ToneMapping::parse(t) {
+                Some(m) => gui_config.postfx.tone_mapping = m,
+                None => eprintln!(
+                    "xHoly: warning: bad --tone-mapping '{t}', expected linear|reinhard|filmic|aces"
+                ),
+            }
+        }
+        if let Some(a) = &args.aa {
+            match xholy::gui::AaMethod::parse(a) {
+                Some(m) => gui_config.postfx.aa = m,
+                None => eprintln!("xHoly: warning: bad --aa '{a}', expected off|fxaa|msaa4"),
+            }
         }
         if gui_headless {
             gui_config.headless = true;

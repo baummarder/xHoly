@@ -128,6 +128,12 @@ xholy --fullscreen          # start fullscreen
 xholy --theme gold          # dark | gold | light
 xholy --frame-pacing auto   # auto | fixed | uncapped
 xholy --no-vsync            # disable VSync (manual pacing takes over)
+xholy --renderer vulkan     # alias for --gpu-api
+xholy --bloom               # bloom post-FX (default on; --no-bloom off)
+xholy --tone-mapping aces   # linear | reinhard | filmic | aces
+xholy --aa fxaa             # off | fxaa | msaa4
+xholy --game game.bin       # run ARM64 guest image headless (Phase 8)
+xholy --native-wm           # native C++ WM demo window (Windows)
 ```
 
 ### Framerate

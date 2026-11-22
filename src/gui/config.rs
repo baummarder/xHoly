@@ -5,6 +5,7 @@
 //! they compile on every target (incl. wasm and tests).
 
 use crate::gui::frame_pacing::FramePacingMode;
+use crate::gui::postfx::PostFxConfig;
 use serde::{Deserialize, Serialize};
 
 /// Detected/selected GPU API.
@@ -150,6 +151,9 @@ pub struct GuiConfig {
     pub theme: GuiTheme,
     /// Preferred GPU API (`Auto` = probe Vulkan → OpenGL → Software).
     pub preferred_api: GpuApiPreference,
+    /// Post-processing configuration (Phase 9): bloom, tone mapping,
+    /// anti-aliasing. Ignored by the software renderer.
+    pub postfx: PostFxConfig,
 }
 
 impl Default for GuiConfig {
@@ -170,6 +174,7 @@ impl Default for GuiConfig {
             headless: false,
             theme: GuiTheme::Dark,
             preferred_api: GpuApiPreference::Auto,
+            postfx: PostFxConfig::default(),
         }
     }
 }

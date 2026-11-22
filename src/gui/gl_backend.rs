@@ -54,6 +54,10 @@ impl GuiFrameRenderer for GlBackend {
         GpuApi::OpenGL
     }
 
+    fn set_postfx(&mut self, config: crate::gui::postfx::PostFxConfig) {
+        self.inner.set_postfx(config);
+    }
+
     fn is_fallback(&self) -> bool {
         // GL via wgpu is a first-class backend, but we still flag it so
         // the UI can show the "OpenGL fallback" notice per spec.

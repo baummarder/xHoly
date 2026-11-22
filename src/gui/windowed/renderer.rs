@@ -34,6 +34,11 @@ pub struct WgpuRenderer {
     height: u32,
     /// Reusable frame texture (recreated on resize).
     frame_texture: Option<wgpu::Texture>,
+    /// Phase-9 post-processing: config + lazily-built GPU pipeline.
+    postfx_config: crate::gui::postfx::PostFxConfig,
+    postfx: Option<super::postfx::PostFx>,
+    /// Offscreen final-output texture (post-FX path readback).
+    present_texture: Option<wgpu::Texture>,
 }
 
 impl WgpuRenderer {
@@ -102,6 +107,9 @@ impl WgpuRenderer {
             width: width.max(1),
             height: height.max(1),
             frame_texture: None,
+            postfx_config: crate::gui::postfx::PostFxConfig::default(),
+            postfx: None,
+            present_texture: None,
         })
     }
 
@@ -151,7 +159,41 @@ impl WgpuRenderer {
             width: width.max(1),
             height: height.max(1),
             frame_texture: None,
+            postfx_config: crate::gui::postfx::PostFxConfig::default(),
+            postfx: None,
+            present_texture: None,
         })
+    }
+
+    /// Configure the Phase-9 post-processing pipeline (bloom, tone
+    /// mapping, FXAA). Pass `PostFxConfig::default()` for the standard
+    /// look; a fully-disabled config falls back to the plain blit.
+    pub fn set_postfx(&mut self, config: crate::gui::postfx::PostFxConfig) {
+        self.postfx_config = config;
+        self.postfx = None; // rebuilt lazily with the right format
+    }
+
+    /// Format of the final render target (surface or offscreen).
+    fn target_format(&self) -> wgpu::TextureFormat {
+        match (&self.target, &self.surface_config) {
+            (RenderTarget::Surface(_), Some(cfg)) => cfg.format,
+            _ => wgpu::TextureFormat::Rgba8Unorm,
+        }
+    }
+
+    /// Lazily build the post-FX pipeline set for the current target.
+    fn ensure_postfx(&mut self) -> Option<&mut super::postfx::PostFx> {
+        if !self.postfx_config.active() {
+            return None;
+        }
+        if self.postfx.is_none() {
+            let format = self.target_format();
+            self.postfx =
+                super::postfx::PostFx::new(&self.device, &self.queue, format, self.postfx_config)
+                    .map_err(|e| log::warn!("xHoly: postfx init failed: {e}"))
+                    .ok();
+        }
+        self.postfx.as_mut()
     }
 
     /// Resize the render target (surface config or offscreen dims).
@@ -159,6 +201,7 @@ impl WgpuRenderer {
         self.width = width.max(1);
         self.height = height.max(1);
         self.frame_texture = None;
+        self.present_texture = None;
         if let (RenderTarget::Surface(surface), Some(config)) =
             (&self.target, &mut self.surface_config)
         {
@@ -233,6 +276,11 @@ impl WgpuRenderer {
             ],
         });
 
+        // Phase 9: when post-FX is active the uploaded frame texture IS
+        // the scene input — the composite pass samples it directly, so
+        // no extra blit is needed before the post chain.
+        let postfx_active = self.postfx_config.active();
+
         match &self.target {
             RenderTarget::Surface(surface) => {
                 let frame = surface
@@ -246,69 +294,90 @@ impl WgpuRenderer {
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("xHoly GUI Encoder"),
                         });
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("xHoly GUI Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        ..Default::default()
-                    });
-                    pass.set_pipeline(&self.pipeline);
-                    pass.set_bind_group(0, &bind_group, &[]);
-                    pass.draw(0..3, 0..1);
+                if postfx_active {
+                    if let Some(fx) = self.ensure_postfx() {
+                        fx.render(&mut encoder, &tex_view, &view, width, height);
+                    } else {
+                        // PostFX failed to build — plain blit fallback.
+                        self.blit_pass(&mut encoder, &bind_group, &view);
+                    }
+                } else {
+                    self.blit_pass(&mut encoder, &bind_group, &view);
                 }
                 self.queue.submit([encoder.finish()]);
                 frame.present();
                 Ok(())
             }
             RenderTarget::Offscreen => {
-                let target = self.device.create_texture(&wgpu::TextureDescriptor {
-                    label: Some("xHoly GUI Offscreen Target"),
-                    size: wgpu::Extent3d {
-                        width,
-                        height,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                    view_formats: &[],
-                });
-                let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                // Persistent output texture so post-FX results can be
+                // read back (and so readback works for both paths).
+                let need_out = self
+                    .present_texture
+                    .as_ref()
+                    .map(|t| t.width() != width || t.height() != height)
+                    .unwrap_or(true);
+                if need_out {
+                    self.present_texture =
+                        Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                            label: Some("xHoly GUI Present Target"),
+                            size: wgpu::Extent3d {
+                                width,
+                                height,
+                                depth_or_array_layers: 1,
+                            },
+                            mip_level_count: 1,
+                            sample_count: 1,
+                            dimension: wgpu::TextureDimension::D2,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                                | wgpu::TextureUsages::COPY_SRC,
+                            view_formats: &[],
+                        }));
+                }
+                let target_tex = self.present_texture.as_ref().unwrap();
+                let view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
                 let mut encoder =
                     self.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                             label: Some("xHoly GUI Offscreen Encoder"),
                         });
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("xHoly GUI Offscreen Pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        ..Default::default()
-                    });
-                    pass.set_pipeline(&self.pipeline);
-                    pass.set_bind_group(0, &bind_group, &[]);
-                    pass.draw(0..3, 0..1);
+                if postfx_active {
+                    if let Some(fx) = self.ensure_postfx() {
+                        fx.render(&mut encoder, &tex_view, &view, width, height);
+                    } else {
+                        self.blit_pass(&mut encoder, &bind_group, &view);
+                    }
+                } else {
+                    self.blit_pass(&mut encoder, &bind_group, &view);
                 }
                 self.queue.submit([encoder.finish()]);
                 Ok(())
             }
         }
+    }
+
+    /// Plain fullscreen blit of the frame texture into `view`.
+    fn blit_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        bind_group: &wgpu::BindGroup,
+        view: &wgpu::TextureView,
+    ) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("xHoly GUI Blit Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, bind_group, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Read back the last offscreen frame (headless mode / tests).
@@ -317,14 +386,12 @@ impl WgpuRenderer {
         if !matches!(self.target, RenderTarget::Offscreen) {
             return Err("readback only supported in offscreen mode".into());
         }
-        // Re-render is not possible here (no source pixels stored), so we
-        // re-upload the last composited frame stored in frame_texture via
-        // a copy to buffer. The caller must keep the frame pixels; for
-        // simplicity we expose readback of the *frame texture* which
-        // holds the last uploaded RGBA — that IS the composited frame.
+        // Post-FX path renders into present_texture; plain path also
+        // renders there now (persistent offscreen target).
         let texture = self
-            .frame_texture
+            .present_texture
             .as_ref()
+            .or(self.frame_texture.as_ref())
             .ok_or_else(|| "no frame rendered yet".to_string())?;
         let bytes_per_row = (width * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {

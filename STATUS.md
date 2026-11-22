@@ -54,6 +54,17 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [x] **C++ WM ↔ Rust FFI** — `extern "C"` API + `build.rs`/`cc` compile,
   `src/gui/native_wm.rs` safe wrappers, `--native-wm` demo flag
   (Windows-only; additive — winit GUI still default)
+- [x] **GPU post-processing** (Phase 9) — `shaders/postfx.wgsl`:
+  bright-pass + separable bloom blur (half-res) + composite with
+  tone mapping (Reinhard/Filmic/ACES) + FXAA-lite; wired through
+  `WgpuRenderer::set_postfx`, CLI `--bloom/--tone-mapping/--aa`
+- [x] **Widget system** (`src/gui/widgets.rs`) — retained-mode tree,
+  z-order, hover/press/drag, Clicked/Dragged events, framebuffer draw
+- [x] **Texture atlas + ISO-offset loader + wgpu texture cache**
+  (`src/gui/textures.rs`)
+- [x] **Shader cache** (`src/gui/shader_cache.rs`) — validated WGSL
+  copies + FNV manifest under the platform cache dir
+- [x] Perf frame-drop logging (sustained <50% FPS limit → warning)
 - [x] Branding: logo (gold X + crucifix), app/window icons, PNG
   exports, favicon
 - [x] Docs: README, INSTALL, CONTRIBUTING, CITATION.cff, whitepaper,

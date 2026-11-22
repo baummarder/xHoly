@@ -14,22 +14,27 @@ pub mod gl_backend;
 pub mod gpu_api_detector;
 #[cfg(all(not(target_arch = "wasm32"), target_os = "windows"))]
 pub mod native_wm;
+pub mod postfx;
 pub mod preview;
 pub mod ratatui_backend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod renderer;
 pub mod settings;
+pub mod shader_cache;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod software_renderer;
 pub mod terminal;
+pub mod textures;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wgpu_backend;
+pub mod widgets;
 pub mod window;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod windowed;
 
 pub use config::{GpuApi, GpuApiPreference, GuiBackend, GuiConfig, GuiTheme};
 pub use frame_pacing::{FramePacer, FramePacingMode};
+pub use postfx::{AaMethod, PostFxConfig, ToneMapping};
 
 use chrono::{NaiveDate, NaiveDateTime};
 use std::path::PathBuf;

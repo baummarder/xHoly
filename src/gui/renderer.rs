@@ -27,6 +27,9 @@ pub trait GuiFrameRenderer {
     fn is_fallback(&self) -> bool {
         false
     }
+    /// Configure post-processing (Phase 9). No-op for renderers that
+    /// don't support it (software fallback).
+    fn set_postfx(&mut self, _config: crate::gui::postfx::PostFxConfig) {}
     /// Warning text to show in the UI overlay, if any.
     fn warning(&self) -> Option<&'static str> {
         self.is_fallback().then_some("fallback renderer active")
@@ -48,5 +51,9 @@ impl GuiFrameRenderer for crate::gui::windowed::renderer::WgpuRenderer {
 
     fn gpu_api(&self) -> GpuApi {
         GpuApi::Vulkan
+    }
+
+    fn set_postfx(&mut self, config: crate::gui::postfx::PostFxConfig) {
+        crate::gui::windowed::renderer::WgpuRenderer::set_postfx(self, config);
     }
 }
