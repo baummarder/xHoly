@@ -1,22 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
   <title id="title">xHoly window icon</title>
-  <desc id="desc">xHoly window icon: simplified gold X-of-crosses mark on dark background, no frame.</desc>
+  <desc id="desc">xHoly window icon: bold gold X with a small crucifix at the top right on a dark background, no frame.</desc>
 
   <rect width="512" height="512" rx="96" fill="#1a1a1a"/>
   <circle cx="256" cy="256" r="180" fill="none" stroke="#FFD700" stroke-width="9" opacity="0.85"/>
 
+  <!-- The X: two thick gold bars crossing at the center -->
   <g transform="translate(256 256)">
     <g transform="rotate(-45)">
-      <rect x="-28" y="-148" width="56" height="296" rx="15" fill="#FFD700"/>
-      <rect x="-84" y="-140" width="168" height="30" rx="13" fill="#FFD700"/>
+      <rect x="-30" y="-118" width="60" height="236" rx="15" fill="#FFD700"/>
     </g>
     <g transform="rotate(45)">
-      <rect x="-28" y="-148" width="56" height="296" rx="15" fill="#FFD700"/>
-      <rect x="-84" y="-140" width="168" height="30" rx="13" fill="#FFD700"/>
+      <rect x="-30" y="-118" width="60" height="236" rx="15" fill="#FFD700"/>
     </g>
   </g>
 
   <circle cx="256" cy="256" r="27" fill="#1a1a1a"/>
   <circle cx="256" cy="256" r="27" fill="none" stroke="#FFD700" stroke-width="8"/>
   <circle cx="256" cy="256" r="8" fill="#FFD700"/>
+
+  <!-- Crucifix at the top right, next to the X -->
+  <g transform="translate(344 144)">
+    <rect x="-15" y="-48" width="30" height="96" rx="8" fill="#FFD700"/>
+    <rect x="-39" y="-37" width="78" height="24" rx="8" fill="#FFD700"/>
+  </g>
 </svg>

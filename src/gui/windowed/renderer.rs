@@ -38,11 +38,16 @@ pub struct WgpuRenderer {
 
 impl WgpuRenderer {
     /// Create a renderer for a winit window surface.
+    ///
+    /// `vsync` selects the present mode: on → `Fifo` (vsync'd), off →
+    /// `Immediate`/`Mailbox` when the surface supports them so the
+    /// [`FramePacer`](crate::gui::FramePacer) can pace manually.
     pub fn new_surface(
         instance: &wgpu::Instance,
         surface: wgpu::Surface<'static>,
         width: u32,
         height: u32,
+        vsync: bool,
     ) -> Result<Self, String> {
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -69,12 +74,9 @@ impl WgpuRenderer {
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(caps.formats[0]);
-        let present_mode = caps
-            .present_modes
-            .iter()
-            .copied()
-            .find(|m| *m == wgpu::PresentMode::Fifo)
-            .unwrap_or(caps.present_modes[0]);
+        // FramePacer maps vsync on/off onto the best available mode.
+        let probe = crate::gui::FramePacer::new(60, vsync);
+        let present_mode = probe.present_mode(&caps.present_modes);
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,

@@ -55,7 +55,7 @@ xHoly is a research emulator/simulator architecture for **Xbox Series S|X** and
 xHoly/
 ├── Cargo.toml               # Rust workspace manifest
 ├── build.sbt                # Root sbt build
-├── xHoly-logo.svg           # Logo (X of two intersecting crosses)
+├── xHoly-logo.svg           # Logo (bold X + crucifix, gold on dark)
 ├── .github/
 │   ├── CODEOWNERS
 │   ├── CITATION.cff
@@ -74,9 +74,12 @@ xHoly/
 │   └── config/    (settings)
 ├── scala/                   # sbt crossProject (JVM + Scala.js)
 │   ├── shared/  jvm/  js/  project/
+├── cpp/window_manager/      # Native C++17 Win32 window manager (see its README)
 ├── benchmarks/              # Criterion benches
 └── docs/
-    └── whitepaper.md        # Hybrid-architecture technical paper
+    ├── whitepaper.md        # Hybrid-architecture technical paper
+    ├── gpu-api-support.md   # GPU backend recommendations
+    └── framerate-fix.md     # Frame pacing / VSync notes
 ```
 
 ## Building
@@ -123,7 +126,21 @@ xholy --fps-limit 120       # cap GUI framerate (0 = unlimited)
 xholy --resolution 1280x720 # window size
 xholy --fullscreen          # start fullscreen
 xholy --theme gold          # dark | gold | light
+xholy --frame-pacing auto   # auto | fixed | uncapped
+xholy --no-vsync            # disable VSync (manual pacing takes over)
 ```
+
+### Framerate
+
+- **Default:** VSync on (`PresentMode::Fifo`) + `fps_limit` cap — the
+  loop holds the configured rate via `FramePacer`.
+- **`--fps-limit N`** caps the GUI at N FPS; `0`/absent = uncapped.
+- **`--frame-pacing`**: `auto` (VSync→Fifo, otherwise manual sleep),
+  `fixed` (always manual pacing), `uncapped` (no limit).
+- **`--no-vsync`** switches the surface to `Immediate`/`Mailbox` and
+  lets `FramePacer` pace manually — use for benchmarking.
+- See `docs/framerate-fix.md` for the diagnosis and
+  `STATUS.md` for an honest feature checklist.
 
 The GUI auto-detects the GPU API (Vulkan → OpenGL → Software) and
 persists the result to `~/.config/xholy/gpu_config.toml`. See
@@ -132,7 +149,8 @@ persists the result to `~/.config/xholy/gpu_config.toml`. See
 **Troubleshooting:** if the windowed GUI fails with "no GPU API
 available", use `--gpu-software` (CPU renderer, works anywhere) or
 `--gui-tui` (terminal UI). Press `O` in the windowed GUI for the
-settings panel.
+settings panel. If FPS is capped unexpectedly, check `--vsync`/`--no-vsync`
+and `--frame-pacing`.
 
 ### Running
 

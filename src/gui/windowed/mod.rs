@@ -16,11 +16,11 @@ pub mod window;
 
 use crate::gui::gpu_api_detector::{self, GpuApi, GpuApiPreference};
 use crate::gui::renderer::GuiFrameRenderer;
-use crate::gui::{GameListItem, GuiConfig};
+use crate::gui::{FramePacer, GameListItem, GuiConfig};
 use input::{GuiAction, InputState};
 use state::WindowedGuiState;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -38,6 +38,8 @@ pub struct WindowApp {
     gpu_api: GpuApi,
     last_tick: Instant,
     fps_ema: f32,
+    /// Frame-rate limiter shared by windowed + headless paths.
+    pacer: FramePacer,
     /// Set when the app should exit.
     pub should_exit: bool,
 }
@@ -58,6 +60,11 @@ impl WindowApp {
             fullscreen: config.fullscreen,
             ..Default::default()
         };
+        let pacer = FramePacer::with_mode(
+            config.fps_limit.unwrap_or(0),
+            config.vsync,
+            config.frame_pacing_mode,
+        );
         Self {
             config,
             state,
@@ -68,6 +75,7 @@ impl WindowApp {
             gpu_api,
             last_tick: Instant::now(),
             fps_ema: 0.0,
+            pacer,
             should_exit: false,
         }
     }
@@ -82,18 +90,18 @@ impl WindowApp {
     /// Process one composited frame through the renderer.
     /// Returns Ok(()) on success.
     ///
-    /// Honors `config.fps_limit` (default 60): after presenting, sleeps
-    /// for the remainder of the frame budget so the loop holds a steady
-    /// ≥60 FPS cadence instead of spinning uncapped.
+    /// Honors `fps_limit`/`vsync` via [`FramePacer`]: records the frame
+    /// start, renders, then sleeps until the next frame deadline so the
+    /// loop holds a steady cadence instead of spinning uncapped.
     pub fn render_frame(&mut self) -> Result<(), String> {
-        let frame_start = Instant::now();
+        self.pacer.record_frame_start();
         let (w, h) = self.state.resolution;
         let (fb, _layout) = ui::composite(&self.state, w, h);
         if let Some(r) = self.renderer.as_mut() {
             r.render_frame(&fb, w, h)?;
         }
         self.tick_fps();
-        pace_frame(self.config.fps_limit, frame_start);
+        self.pacer.sleep_until_next_frame();
         Ok(())
     }
 
@@ -212,6 +220,7 @@ impl ApplicationHandler for WindowApp {
             surface,
             size.width,
             size.height,
+            self.config.vsync,
         ) {
             Ok(r) => r,
             Err(e) => {
@@ -391,11 +400,12 @@ pub fn run_headless(
         let mut sw = crate::gui::software_renderer::SoftwareRenderer::new(w, h);
         let mut last_fb = Vec::new();
         for _ in 0..frames.max(1) {
+            app.pacer.record_frame_start();
             let (fb, _layout) = ui::composite(&app.state, w, h);
             sw.render_frame(&fb, w, h)?;
             last_fb = fb;
             app.tick_fps();
-            pace(app.config.fps_limit);
+            app.pacer.sleep_until_next_frame();
         }
         return Ok(last_fb);
     }
@@ -410,38 +420,16 @@ pub fn run_headless(
 
     let mut last_fb = Vec::new();
     for _ in 0..frames.max(1) {
+        app.pacer.record_frame_start();
         let (fb, _layout) = ui::composite(&app.state, w, h);
         last_fb = fb.clone();
         if let Some(r) = app.renderer.as_mut() {
             r.render_frame(&fb, w, h)?;
         }
         app.tick_fps();
-        pace(app.config.fps_limit);
+        app.pacer.sleep_until_next_frame();
     }
     Ok(last_fb)
-}
-
-/// Frame pacing: sleep until `frame_start + 1/fps` has elapsed.
-/// `fps_limit` of `None` means uncapped; values < 1 are ignored.
-fn pace_frame(fps_limit: Option<u32>, frame_start: Instant) {
-    let Some(limit) = fps_limit else { return };
-    if limit == 0 {
-        return;
-    }
-    let budget = Duration::from_secs_f32(1.0 / limit as f32);
-    let elapsed = frame_start.elapsed();
-    if elapsed < budget {
-        std::thread::sleep(budget - elapsed);
-    }
-}
-
-/// Rough frame pacing for the headless loop.
-fn pace(fps_limit: Option<u32>) {
-    if let Some(limit) = fps_limit {
-        if limit > 0 {
-            std::thread::sleep(Duration::from_millis(1000 / limit as u64));
-        }
-    }
 }
 
 /// Scan games for the windowed library (same sources as the TUI).

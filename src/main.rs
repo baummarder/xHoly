@@ -97,6 +97,14 @@ struct Args {
     #[arg(long, value_name = "THEME")]
     theme: Option<String>,
 
+    /// Frame pacing mode: auto | fixed | uncapped.
+    #[arg(long, value_name = "MODE")]
+    frame_pacing: Option<String>,
+
+    /// Disable VSync (manual frame pacing takes over).
+    #[arg(long)]
+    no_vsync: bool,
+
     /// Run without any UI (explicit headless mode; this is the default
     /// when a game image is supplied without --gui).
     #[arg(long)]
@@ -171,6 +179,17 @@ fn main() {
                 Some(theme) => gui_config.theme = theme,
                 None => eprintln!("xHoly: warning: bad --theme '{t}', expected dark|gold|light"),
             }
+        }
+        if let Some(m) = &args.frame_pacing {
+            match xholy::gui::FramePacingMode::parse(m) {
+                Some(mode) => gui_config.frame_pacing_mode = mode,
+                None => eprintln!(
+                    "xHoly: warning: bad --frame-pacing '{m}', expected auto|fixed|uncapped"
+                ),
+            }
+        }
+        if args.no_vsync {
+            gui_config.vsync = false;
         }
         if gui_headless {
             gui_config.headless = true;

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Render xHoly-icon PNGs from the same geometry as xHoly-logo.svg.
 
+Logo: bold gold X + small crucifix at the top right, inside a sphere
+ring on a dark rounded-square background.
+
 Usage: python tools/render_icons.py
 Outputs PNGs into assets/icons/.
 """
@@ -13,31 +16,56 @@ GOLD = (0xFF, 0xD7, 0x00, 255)
 # Geometry in 512-viewBox units (must mirror xHoly-logo.svg)
 RING_R = 196
 RING_W = 10
-BEAM_W, BEAM_H = 60, 336
-SERIF_W, SERIF_H = 192, 34
+X_HALF = 130      # half-length of each X bar
+X_W = 64          # X bar width
+X_RX = 16         # X bar corner radius
+CRUC_POS = (352, 148)   # crucifix center (512 units)
+CRUC_VW, CRUC_VH = 34, 112   # vertical beam w/h
+CRUC_HW, CRUC_HH = 92, 28    # horizontal beam w/h
+CRUC_RX = 9
 NODE_R, NODE_RING_W, NODE_DOT_R = 30, 9, 9
 CORNER_R = 112  # background corner radius
 
 
-def cross_layer(size: int, angle: float) -> Image.Image:
-    """Draw one crucifix-cross (beam + top serif) and rotate it."""
+def _rotated_bar(size: int, w_units: float, h_units: float,
+                 angle: float) -> Image.Image:
+    """One rounded gold bar centered on the image, rotated by `angle`."""
     layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     s = size / 512.0
     cx = cy = size / 2.0
-
-    beam_w, beam_h = BEAM_W * s, BEAM_H * s
-    serif_w, serif_h = SERIF_W * s, SERIF_H * s
-    beam_x0, beam_y0 = cx - beam_w / 2, cy - beam_h / 2
-    # serif sits near the top of the beam
-    serif_x0 = cx - serif_w / 2
-    serif_y0 = beam_y0 + (BEAM_H - SERIF_H) * s * 0.18
-
-    d.rounded_rectangle([beam_x0, beam_y0, beam_x0 + beam_w, beam_y0 + beam_h],
-                        radius=beam_w * 0.28, fill=GOLD)
-    d.rounded_rectangle([serif_x0, serif_y0, serif_x0 + serif_w, serif_y0 + serif_h],
-                        radius=serif_h * 0.42, fill=GOLD)
+    w, h = w_units * s, h_units * s
+    d.rounded_rectangle([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2],
+                        radius=min(w, h) * 0.25, fill=GOLD)
     return layer.rotate(angle, resample=Image.BICUBIC, center=(cx, cy))
+
+
+def draw_x(img: Image.Image, size: int,
+           half: float = X_HALF, w: float = X_W) -> None:
+    """Composite the X (two rotated bars) onto img."""
+    for angle in (-45, 45):
+        img.alpha_composite(_rotated_bar(size, w, half * 2, angle))
+
+
+def draw_crucifix(img: Image.Image, size: int,
+                  pos=CRUC_POS,
+                  vw: float = CRUC_VW, vh: float = CRUC_VH,
+                  hw: float = CRUC_HW, hh: float = CRUC_HH) -> None:
+    """Draw the upright crucifix at `pos` (512-unit coords)."""
+    d = ImageDraw.Draw(img)
+    s = size / 512.0
+    cx, cy = pos[0] * s, pos[1] * s
+    vw_, vh_ = vw * s, vh * s
+    hw_, hh_ = hw * s, hh * s
+    rx = CRUC_RX * s
+    # vertical beam
+    d.rounded_rectangle([cx - vw_ / 2, cy - vh_ / 2,
+                         cx + vw_ / 2, cy + vh_ / 2],
+                        radius=rx, fill=GOLD)
+    # horizontal beam near the top
+    hy = cy - vh_ / 2 + (vh_ - hh_) * 0.30
+    d.rounded_rectangle([cx - hw_ / 2, hy, cx + hw_ / 2, hy + hh_],
+                        radius=rx, fill=GOLD)
 
 
 def render(size: int) -> Image.Image:
@@ -54,9 +82,9 @@ def render(size: int) -> Image.Image:
     d.ellipse([cx - RING_R * s, cy - RING_R * s, cx + RING_R * s, cy + RING_R * s],
               outline=GOLD, width=ring_w)
 
-    # Two crosses
-    img.alpha_composite(cross_layer(size, -45))
-    img.alpha_composite(cross_layer(size, 45))
+    # X + crucifix
+    draw_x(img, size)
+    draw_crucifix(img, size)
 
     # Center node: dark fill, gold ring, gold dot
     d = ImageDraw.Draw(img)

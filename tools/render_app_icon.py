@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw, ImageFilter
 import math, os, sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from render_icons import cross_layer, GOLD, BG
+from render_icons import draw_x, draw_crucifix, GOLD, BG
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "assets", "icons")
 
@@ -19,6 +19,12 @@ APP_FRAME_INSET = 14
 APP_FRAME_R = 102
 WIN_CORNER_R = 96
 WIN_RING_R = 180
+
+# Icon-specific X/crucifix geometry (mirrors the SVGs)
+APP_X_HALF, APP_X_W = 122, 60
+APP_CRUC_POS = (348, 146)
+WIN_X_HALF, WIN_X_W = 118, 60
+WIN_CRUC_POS = (344, 144)
 
 
 def render_app_icon(size: int) -> Image.Image:
@@ -43,17 +49,15 @@ def render_app_icon(size: int) -> Image.Image:
                cx + APP_RING_R * s + ring_w / 2, cy + APP_RING_R * s + ring_w / 2],
               outline=GOLD, width=max(1, int(ring_w)))
 
-    # Two crucifix crosses (reuse logo geometry, slightly smaller)
-    for angle in (-45, 45):
-        layer = cross_layer(size, angle)
-        # cross_layer uses logo metrics; scale it down a touch via a
-        # centered crop-mask is overkill — instead draw at 0.94 zoom by
-        # past through a pre-scaled layer.
-        zoom = layer.resize((int(size * 0.94), int(size * 0.94)),
-                            Image.LANCZOS)
-        ox = (size - zoom.width) // 2
-        oy = (size - zoom.height) // 2
-        img.alpha_composite(zoom, (ox, oy))
+    # X + crucifix (drawn on a layer so the X can be scaled slightly)
+    mark = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw_x(mark, size, APP_X_HALF, APP_X_W)
+    draw_crucifix(mark, size, APP_CRUC_POS)
+    zoom = 0.94
+    mark = mark.resize((int(size * zoom), int(size * zoom)), Image.LANCZOS)
+    ox = (size - mark.width) // 2
+    oy = (size - mark.height) // 2
+    img.alpha_composite(mark, (ox, oy))
 
     # Center node
     node_r = 30 * s
@@ -95,13 +99,14 @@ def render_window_icon(size: int) -> Image.Image:
                cx + WIN_RING_R * s + ring_w / 2, cy + WIN_RING_R * s + ring_w / 2],
               outline=GOLD, width=max(1, int(ring_w)))
 
-    for angle in (-45, 45):
-        layer = cross_layer(size, angle)
-        zoom = layer.resize((int(size * 0.90), int(size * 0.90)),
-                            Image.LANCZOS)
-        ox = (size - zoom.width) // 2
-        oy = (size - zoom.height) // 2
-        img.alpha_composite(zoom, (ox, oy))
+    mark = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw_x(mark, size, WIN_X_HALF, WIN_X_W)
+    draw_crucifix(mark, size, WIN_CRUC_POS)
+    zoom = 0.90
+    mark = mark.resize((int(size * zoom), int(size * zoom)), Image.LANCZOS)
+    ox = (size - mark.width) // 2
+    oy = (size - mark.height) // 2
+    img.alpha_composite(mark, (ox, oy))
 
     node_r = 27 * s
     d.ellipse([cx - node_r, cy - node_r, cx + node_r, cy + node_r], fill=BG)

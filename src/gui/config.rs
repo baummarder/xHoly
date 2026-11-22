@@ -4,6 +4,7 @@
 //! [`GpuApiPreference`]. These types deliberately avoid wgpu/winit so
 //! they compile on every target (incl. wasm and tests).
 
+use crate::gui::frame_pacing::FramePacingMode;
 use serde::{Deserialize, Serialize};
 
 /// Detected/selected GPU API.
@@ -140,6 +141,9 @@ pub struct GuiConfig {
     pub fullscreen: bool,
     /// Enable vsync (windowed backend only).
     pub vsync: bool,
+    /// Frame pacing policy: `Auto` (VSync→Fifo, else manual), `Fixed`,
+    /// or `Uncapped`.
+    pub frame_pacing_mode: FramePacingMode,
     /// Headless mode: render loop without a window.
     pub headless: bool,
     /// Color theme.
@@ -162,6 +166,7 @@ impl Default for GuiConfig {
             show_gpu_usage: true,
             fullscreen: false,
             vsync: true,
+            frame_pacing_mode: FramePacingMode::Auto,
             headless: false,
             theme: GuiTheme::Dark,
             preferred_api: GpuApiPreference::Auto,

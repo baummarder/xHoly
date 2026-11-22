@@ -7,6 +7,7 @@
 //! Theme: gold `#FFD700` accents on dark `#1a1a1a`, matching the logo.
 
 pub mod config;
+pub mod frame_pacing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod gl_backend;
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,6 +27,7 @@ pub mod window;
 pub mod windowed;
 
 pub use config::{GpuApi, GpuApiPreference, GuiBackend, GuiConfig, GuiTheme};
+pub use frame_pacing::{FramePacer, FramePacingMode};
 
 use chrono::{NaiveDate, NaiveDateTime};
 use std::path::PathBuf;
