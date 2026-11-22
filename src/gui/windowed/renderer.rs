@@ -1,0 +1,440 @@
+//! wgpu renderer for the windowed GUI — Phase 5.
+//!
+//! Two modes:
+//! - **Surface**: renders the composited RGBA framebuffer to the winit
+//!   window's swapchain (real windowed mode).
+//! - **Offscreen**: renders to a texture and reads pixels back (headless
+//!   mode, tests, `--gui-headless`).
+//!
+//! The UI is composited in software ([`crate::gui::windowed::ui`]) and
+//! uploaded as an `Rgba8Unorm` texture each frame; the shader is a
+//! fullscreen triangle that samples it 1:1.
+
+/// WGSL source for the GUI blit shader.
+pub const GUI_SHADER_WGSL: &str = include_str!("../../../shaders/gui.wgsl");
+
+/// Rendering backend selection.
+pub enum RenderTarget {
+    /// Windowed: draw to a wgpu surface.
+    Surface(wgpu::Surface<'static>),
+    /// Headless: draw to an offscreen texture + readback.
+    Offscreen,
+}
+
+/// The windowed GUI renderer.
+pub struct WgpuRenderer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    pipeline: wgpu::RenderPipeline,
+    bind_group_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    target: RenderTarget,
+    surface_config: Option<wgpu::SurfaceConfiguration>,
+    width: u32,
+    height: u32,
+    /// Reusable frame texture (recreated on resize).
+    frame_texture: Option<wgpu::Texture>,
+}
+
+impl WgpuRenderer {
+    /// Create a renderer for a winit window surface.
+    pub fn new_surface(
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, String> {
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        }))
+        .ok_or_else(|| "no suitable wgpu adapter for surface".to_string())?;
+
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("xHoly GUI Device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .map_err(|e| format!("device request failed: {e}"))?;
+
+        let caps = surface.get_capabilities(&adapter);
+        let format = caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(caps.formats[0]);
+        let present_mode = caps
+            .present_modes
+            .iter()
+            .copied()
+            .find(|m| *m == wgpu::PresentMode::Fifo)
+            .unwrap_or(caps.present_modes[0]);
+
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode,
+            alpha_mode: caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&device, &config);
+
+        let (pipeline, bgl, sampler) = Self::create_pipeline(&device, format);
+        Ok(Self {
+            device,
+            queue,
+            pipeline,
+            bind_group_layout: bgl,
+            sampler,
+            target: RenderTarget::Surface(surface),
+            surface_config: Some(config),
+            width: width.max(1),
+            height: height.max(1),
+            frame_texture: None,
+        })
+    }
+
+    /// Create a headless offscreen renderer (no window needed).
+    pub fn new_offscreen(width: u32, height: u32) -> Result<Self, String> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: None,
+            force_fallback_adapter: false,
+        }))
+        .ok_or_else(|| "no suitable wgpu adapter".to_string())?;
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor {
+                label: Some("xHoly GUI Headless Device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
+            },
+            None,
+        ))
+        .map_err(|e| format!("device request failed: {e}"))?;
+
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let (pipeline, bgl, sampler) = Self::create_pipeline(&device, format);
+        Ok(Self {
+            device,
+            queue,
+            pipeline,
+            bind_group_layout: bgl,
+            sampler,
+            target: RenderTarget::Offscreen,
+            surface_config: None,
+            width: width.max(1),
+            height: height.max(1),
+            frame_texture: None,
+        })
+    }
+
+    /// Resize the render target (surface config or offscreen dims).
+    pub fn resize(&mut self, width: u32, height: u32) {
+        self.width = width.max(1);
+        self.height = height.max(1);
+        self.frame_texture = None;
+        if let (RenderTarget::Surface(surface), Some(config)) =
+            (&self.target, &mut self.surface_config)
+        {
+            config.width = self.width;
+            config.height = self.height;
+            surface.configure(&self.device, config);
+        }
+    }
+
+    /// Upload `rgba` (width×height×4) and draw one fullscreen frame.
+    ///
+    /// For surface mode this presents to the window; for offscreen mode
+    /// it renders to a texture (read back via [`Self::readback`]).
+    pub fn render_rgba(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
+        debug_assert_eq!(rgba.len(), (width * height * 4) as usize);
+
+        // (Re)create the frame texture when size changes.
+        let need_tex = self
+            .frame_texture
+            .as_ref()
+            .map(|t| t.width() != width || t.height() != height)
+            .unwrap_or(true);
+        if need_tex {
+            self.frame_texture = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("xHoly GUI Frame"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            }));
+        }
+        let texture = self.frame_texture.as_ref().unwrap();
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("xHoly GUI Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tex_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
+
+        match &self.target {
+            RenderTarget::Surface(surface) => {
+                let frame = surface
+                    .get_current_texture()
+                    .map_err(|e| format!("surface texture: {e}"))?;
+                let view = frame
+                    .texture
+                    .create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("xHoly GUI Encoder"),
+                        });
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("xHoly GUI Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                self.queue.submit([encoder.finish()]);
+                frame.present();
+                Ok(())
+            }
+            RenderTarget::Offscreen => {
+                let target = self.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("xHoly GUI Offscreen Target"),
+                    size: wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+                let mut encoder =
+                    self.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("xHoly GUI Offscreen Encoder"),
+                        });
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("xHoly GUI Offscreen Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                    pass.set_pipeline(&self.pipeline);
+                    pass.set_bind_group(0, &bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                self.queue.submit([encoder.finish()]);
+                Ok(())
+            }
+        }
+    }
+
+    /// Read back the last offscreen frame (headless mode / tests).
+    /// For surface mode this returns an error — readback isn't wired.
+    pub fn readback(&mut self, width: u32, height: u32) -> Result<Vec<u8>, String> {
+        if !matches!(self.target, RenderTarget::Offscreen) {
+            return Err("readback only supported in offscreen mode".into());
+        }
+        // Re-render is not possible here (no source pixels stored), so we
+        // re-upload the last composited frame stored in frame_texture via
+        // a copy to buffer. The caller must keep the frame pixels; for
+        // simplicity we expose readback of the *frame texture* which
+        // holds the last uploaded RGBA — that IS the composited frame.
+        let texture = self
+            .frame_texture
+            .as_ref()
+            .ok_or_else(|| "no frame rendered yet".to_string())?;
+        let bytes_per_row = (width * 4).div_ceil(256) * 256;
+        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("xHoly GUI Readback"),
+            size: (bytes_per_row * height) as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("xHoly GUI Readback Encoder"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()]);
+
+        let slice = buf.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |r| {
+            let _ = tx.send(r);
+        });
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.recv()
+            .map_err(|_| "map failed".to_string())?
+            .map_err(|e| e.to_string())?;
+        let data = slice.get_mapped_range();
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height as usize {
+            let row = &data
+                [y * bytes_per_row as usize..y * bytes_per_row as usize + (width * 4) as usize];
+            out.extend_from_slice(row);
+        }
+        drop(data);
+        buf.unmap();
+        Ok(out)
+    }
+
+    fn create_pipeline(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout, wgpu::Sampler) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("xHoly GUI Shader"),
+            source: wgpu::ShaderSource::Wgsl(GUI_SHADER_WGSL.into()),
+        });
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("xHoly GUI BGL"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("xHoly GUI Pipeline Layout"),
+            bind_group_layouts: &[&bgl],
+            push_constant_ranges: &[],
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("xHoly GUI Pipeline"),
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("xHoly GUI Sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        (pipeline, bgl, sampler)
+    }
+}

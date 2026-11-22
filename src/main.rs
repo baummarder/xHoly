@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use xholy::config::Config;
-use xholy::gui::{GuiBackend, GuiConfig};
+use xholy::gui::GuiConfig;
 use xholy::optical::{detect_drives, game_scanner, VirtualDrive};
 use xholy::Emulator;
 
@@ -27,19 +27,35 @@ struct Args {
     #[arg(long)]
     drives: bool,
 
-    /// Launch the GUI (ratatui TUI; falls back automatically if the
-    /// terminal can't do raw mode). Equivalent to --headless with UI.
+    /// Launch the windowed GUI (winit + wgpu).
     #[arg(long)]
     gui: bool,
+
+    /// Launch the terminal UI backend (ratatui).
+    #[arg(long)]
+    gui_tui: bool,
+
+    /// Run the windowed GUI pipeline headless (no window; renders
+    /// --max-frames frames offscreen, default 300).
+    #[arg(long)]
+    gui_headless: bool,
+
+    /// Alias for --gui (windowed wgpu GUI).
+    #[arg(long, hide = true)]
+    gui_wgpu: bool,
+
+    /// Alias for --gui-headless.
+    #[arg(long, hide = true)]
+    gui_headless_wgpu: bool,
+
+    /// Alias for --gui-tui.
+    #[arg(long, hide = true)]
+    gui_headless_ratatui: bool,
 
     /// Run without any UI (explicit headless mode; this is the default
     /// when a game image is supplied without --gui).
     #[arg(long)]
     headless: bool,
-
-    /// Use the wgpu preview backend inside the GUI where available.
-    #[arg(long)]
-    wgpu_gui: bool,
 
     /// Maximum number of frames to run (default: unlimited)
     #[arg(long)]
@@ -54,16 +70,38 @@ fn main() {
     env_logger::init();
     let args = Args::parse();
 
-    if args.gui {
+    let gui_mode = args.gui || args.gui_wgpu;
+    let tui_mode = args.gui_tui || args.gui_headless_ratatui;
+    let gui_headless = args.gui_headless || args.gui_headless_wgpu;
+
+    if gui_mode || tui_mode || gui_headless {
         let mut gui_config = GuiConfig::default();
-        if args.wgpu_gui {
-            gui_config.backend = GuiBackend::Wgpu;
+        if gui_headless {
+            gui_config.headless = true;
+            let frames = args.max_frames.unwrap_or(300) as u32;
+            match xholy::gui::windowed::run_headless(gui_config, frames) {
+                Ok(_) => return,
+                Err(e) => {
+                    eprintln!("xHoly: headless GUI failed: {e}");
+                    std::process::exit(1);
+                }
+            }
         }
-        if let Err(e) = xholy::gui::run(gui_config) {
-            eprintln!("xHoly: GUI failed: {e}");
-            std::process::exit(1);
+        if tui_mode {
+            if let Err(e) = xholy::gui::run(gui_config) {
+                eprintln!("xHoly: TUI failed: {e}");
+                std::process::exit(1);
+            }
+            return;
         }
-        return;
+        // Windowed winit+wgpu GUI
+        match xholy::gui::windowed::run_windowed(gui_config) {
+            Ok(()) => return,
+            Err(e) => {
+                eprintln!("xHoly: windowed GUI failed: {e}");
+                std::process::exit(1);
+            }
+        }
     }
     let _ = args.headless; // explicit flag; headless is the default path
 

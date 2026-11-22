@@ -13,6 +13,8 @@ pub mod terminal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wgpu_backend;
 pub mod window;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod windowed;
 
 use chrono::{NaiveDate, NaiveDateTime};
 use std::path::PathBuf;
@@ -76,6 +78,14 @@ pub struct GuiConfig {
     pub show_fps: bool,
     /// Show CPU usage overlay.
     pub show_cpu_usage: bool,
+    /// Show GPU usage overlay.
+    pub show_gpu_usage: bool,
+    /// Start in fullscreen (windowed backend only).
+    pub fullscreen: bool,
+    /// Enable vsync (windowed backend only).
+    pub vsync: bool,
+    /// Headless mode: render loop without a window.
+    pub headless: bool,
     /// Color theme.
     pub theme: GuiTheme,
 }
@@ -91,6 +101,10 @@ impl Default for GuiConfig {
             software_rendering: false,
             show_fps: true,
             show_cpu_usage: true,
+            show_gpu_usage: true,
+            fullscreen: false,
+            vsync: true,
+            headless: false,
             theme: GuiTheme::Dark,
         }
     }
