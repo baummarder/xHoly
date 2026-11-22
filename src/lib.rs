@@ -7,6 +7,7 @@
 pub mod audio;
 pub mod config;
 pub mod core;
+pub mod easter_egg;
 pub mod gpu;
 pub mod gui;
 pub mod io;

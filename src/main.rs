@@ -148,6 +148,18 @@ struct Args {
     #[arg(long)]
     max_frames: Option<u64>,
 
+    /// Show the easter-egg start screen once this session (default on).
+    #[arg(long)]
+    easter_egg: bool,
+
+    /// Always show the easter egg, bypassing the once-per-session guard.
+    #[arg(long)]
+    easter_egg_force: bool,
+
+    /// Disable the easter-egg start screen.
+    #[arg(long)]
+    no_easter_egg: bool,
+
     /// Config file path (default: ~/.config/xholy/config.toml)
     #[arg(long)]
     config: Option<PathBuf>,
@@ -162,6 +174,22 @@ fn parse_resolution(s: &str) -> Option<(u32, u32)> {
 fn main() {
     env_logger::init();
     let args = Args::parse();
+
+    // Easter egg: once-per-session gold start screen before any real
+    // initialization (GUI/game/headless). Debug builds get the minimal
+    // text-only variant so `cargo run` stays quick.
+    use xholy::easter_egg::{self, EasterEgg, EasterEggRequest};
+    match easter_egg::cli::resolve(args.no_easter_egg, args.easter_egg, args.easter_egg_force) {
+        EasterEggRequest::Off => {}
+        EasterEggRequest::Once => {
+            let cfg = easter_egg::cli::config_for(cfg!(debug_assertions));
+            EasterEgg::new(cfg).show_if_needed();
+        }
+        EasterEggRequest::Force => {
+            let cfg = easter_egg::cli::config_for(cfg!(debug_assertions));
+            EasterEgg::new(cfg).show();
+        }
+    }
 
     // Resolve GPU API preference: explicit --gpu-api wins, then the
     // --gpu-*/--gui-* force flags, else Auto.
