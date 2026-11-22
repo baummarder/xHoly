@@ -5,14 +5,28 @@
 //! Xbox One game images. See `docs/whitepaper.md` for the architecture.
 
 pub mod audio;
+pub mod benchmark;
+pub mod cheat_engine;
+pub mod cloud;
 pub mod config;
 pub mod core;
+pub mod debug_menu;
 pub mod easter_egg;
 pub mod gpu;
 pub mod gui;
+pub mod input;
 pub mod io;
+pub mod logging;
+pub mod mod_system;
+pub mod multiplayer;
+pub mod network;
 pub mod optical;
 pub mod runtime;
+pub mod save;
+pub mod shader_cache;
+pub mod storage;
+pub mod telemetry;
+pub mod utils;
 
 use std::time::Duration;
 

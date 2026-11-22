@@ -168,6 +168,52 @@ and `--frame-pacing`.
 Config persists to `~/.config/xholy/config.toml` and is hot-reloaded on
 change. User-defined profiles live under `[profiles]`.
 
+## Infrastructure stack (Phase 11.5)
+
+Non-game-specific subsystems live under `src/` as independently
+testable modules. All public data types are serde-friendly; network,
+cloud, and telemetry I/O go through injectable transports/senders so
+everything runs headless in CI.
+
+| Module | Public API (selection) | Notes / limitations |
+|---|---|---|
+| `config` | `Config` (emulation), `InfraConfig`, `load_effective`, `ConfigWatcher`, `DEFAULTS_TOML` | CLI > file > defaults merge; TOML+JSON; mtime hot-reload. Infra sections (`save`, `mod_system`, `cheat_engine`, `benchmark`, `debug`, `cloud`) are opt-in. |
+| `logging` | `Logger`, `Level`, `Record`, `Sink`, `FileSink`, `JsonlSink`, `RotatingFile`, `Span` | ANSI-colored console + file/JSON-lines sinks, module filters, timing spans. Separate from `log`/`env_logger`. |
+| `input` | `KeyboardState`, `KeyEvent`, `MouseState`, `GamepadState`, `ActionMap`, `apply_deadzone`, `PressState` | Backend-agnostic events; winit adapts into these. No OS gamepad driver — states are fed by the host. |
+| `save` | `SaveManager`, `SavePayload`, `SaveMeta`, `SaveSlot`, `SaveOutcome`, `MAX_SLOTS` | Slots 1–8 + quick/auto; versioned `XHSV` header + CRC32 + RLE compression (not gzip). Cloud upload is a stub transport. |
+| `mod_system` | `ModManifest`, `ModLoader`, `ModRegistry`, `resolve`, `ModExecutor`, `LifecycleState` | `xholy.mod.toml` manifests, semver-ish dep resolution, lifecycle Init→Enable→Update→Disable→Unload. Mods are Rust callbacks, not sandboxed scripts. |
+| `cheat_engine` | `CheatManager`, `CheatEntry`, `CheatValue`, `Trigger`, `compile` | Single-player memory patches + triggers (timer/key/event/watch). Declarative patch format — **no Lua** (documented future work). |
+| `benchmark` | `BenchmarkRunner`, `BenchResult`, `MetricStats`, `StatsRing`, `Profiler`, `Report` | CPU/memory/GPU-adapter micro-benches; Markdown+HTML reports. |
+| `debug_menu` | `DebugMenu`, `MenuItem`, `DebugOverlay`, `OverlayFlags`, `PanelData`, `dump_region`, `inspect_shader` | Headless debug model (panels, overlay flags, hex dumps, shader info). UI binding is separate. |
+| `cloud` | `CloudClient`, `CloudSync`, `CloudAuth`, `CloudCache`, `Transport` | HTTP abstraction over injectable `Transport` — no sockets in tests. Save sync with conflict resolution (local/remote/keep-both). |
+| `shader_cache` | `ShaderCache`, `CacheKey`, `CacheManager`, `CacheStore` | FNV-1a keyed blob cache (memory + disk), LRU eviction, stats. Sits above `core::shader::shader_cache` (DXIL artifacts). |
+| `network` | `Transport`, `HttpRequest`, `HttpResponse`, `NetCache`, `ProxyConfig` | Transport-injected HTTP primitives, offline-first cache, proxy bypass list. No real `reqwest` backend yet. |
+| `telemetry` | `TelemetryCollector`, `TelemetryEvent`, `TelemetryFilter`, `Sender`, `MemorySender` | Anonymized, rule-filtered, batched events (deny attribute keys like `username`/`path`). |
+| `multiplayer` | `Lobby`, `Peer`, `Session`, `ReplicatedState`, `SyncEngine`, `Interpolator`, `Predictor` | Lobby/session model + deterministic state merge + prediction/interpolation math. **No real netcode transport.** |
+| `storage` | `StorageManager`, `StorageDevice`, `DriveKind`, `MountTable`, `SsdCache` | NVMe/SATA/HDD latency profiles, ISO/dir/optical mounts, LRU block cache for slow media. |
+| `utils` | `fnv1a`, `human_bytes`, `slugify`, `ThreadPool`, `Semaphore`, `Permit`, sync helpers | Std-only helpers; no external deps. |
+
+Cross-module coverage lives in `tests/infra_tests.rs` (18 tests):
+config precedence, save stress across parallel slots, mod lifecycle,
+cheat patching, offline cloud/network, telemetry filtering,
+multiplayer rules, and semaphore/channel deadlock detection.
+
+### Honest limitations (Phase 11.5)
+
+- **No real network** — cloud/network/telemetry use injectable
+  transports; a `reqwest` backend is future work.
+- **No Lua cheat compiler** — `cheat_compiler` is a declarative
+  patch format, not a scripting language.
+- **Multiplayer is a model** — lobby/state-sync/prediction math only;
+  no wire protocol, no rollback netcode.
+- **RLE save compression** — not gzip/zstd; adequate for zero-heavy
+  state, swap backends for real compression.
+- **Debug/menu/storage layers are headless models** — UI and real
+  device backends bind on top.
+- Existing emulation limits still apply (see STATUS.md): simulated
+  syscalls/MMU/interrupts, static shader compilation, wgpu instead of
+  D3D12.
+
 ## Performance targets
 
 | Metric | Target |

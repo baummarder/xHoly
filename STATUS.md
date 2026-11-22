@@ -38,6 +38,19 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [x] Optical-drive subsystem: drive detection, ISO mounting,
   multi-disc grouping, game metadata scanning (`src/optical/`)
 - [x] Audio driver abstraction, I/O/HID stubs
+- [x] **Infrastructure stack** (Phase 11.5, 15 modules) — config
+  loader/merge/hot-reload + infra sections, leveled logging with
+  sinks/filters/rotation/spans, input state+mapping+deadzone+press
+  machine, versioned save slots 1–8 + quick/auto + RLE + cloud-sync
+  stub, mod manifests/deps/lifecycle, cheat values/triggers/manager/
+  compiler (declarative, no Lua), benchmarks+profiler+reports,
+  debug menu/overlay/panels/tools, cloud client/auth/cache/sync over
+  injectable transport, FNV-1a shader cache + LRU manager, network
+  transport/cache/proxy, anonymized batched telemetry, multiplayer
+  lobby/state-sync/prediction stubs, storage devices/mounts/SSD
+  cache, utils (hash/string/thread/semaphore). Cross-module coverage
+  in `tests/infra_tests.rs`. Limits: no real network transport, no
+  Lua, no wire netcode, RLE not gzip — see README §Infrastructure.
 
 ### GPU / rendering
 - [x] wgpu 24 software preview pipeline (`src/core/gpu/`)
