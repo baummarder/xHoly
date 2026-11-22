@@ -15,6 +15,11 @@
 //!
 //! executable format (XEX sections, imports, TLS, etc.).
 
+pub mod game_image;
+pub mod game_runner;
+pub mod iso_parser;
+pub mod xex_parser;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 

@@ -16,8 +16,20 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [x] **Xbox kernel stub** (`src/core/kernel/`) — VA memory layout,
   syscall table (Write/CreateThread/Sleep/WriteFile/ReadFile/Yield/
   Exit/Ticks), round-robin thread scheduler with context snapshots
-- [x] **Game loader** (`src/core/loader.rs`) — flat/XEX-lite images,
-  `xboxconfig.xml` parsing, `GameImage::load_into`
+- [x] **Game loader** (`src/core/loader.rs` + `src/core/loader/`)
+  — flat/XEX-lite images, `xboxconfig.xml` parsing, `GameImage::
+  load_into`; Phase-10 submodules: ISO game source (XBOX/GAME scan,
+  executables/shaders/cover-art), XEX2 header parser, `ParsedGameImage`
+  + `AssetCatalog`, `game_runner` (ISO→shader-compile→kernel exec)
+- [x] **Shader translation pipeline** (`src/core/shader/`, Phase 10) —
+  DXBC container parser (ISGN/OSGN sigs, bitcode extract), HLSL IR,
+  hand-rolled SPIR-V 1.0 serializer, WGSL emitter, FNV-1a-keyed
+  `.spv`/`.wgsl` cache, resource-binding model. Retail DXIL → blit
+  fallback (no LLVM decode yet)
+- [x] **Modular kernel** (`src/core/kernel/`, Phase 10) — memory
+  layout, syscall table svc#0–16 (+Ticks=17), round-robin scheduler,
+  GIC stub, MMIO regions, kernel console, heap/event/file/device
+  object tables
 - [x] **Execution glue** (`src/core/execution.rs`) — `--game PATH`
   runs a guest image on interpreter+kernel headless; `hello_world_program`
   assembler proves end-to-end ("Hello, xHoly!" via real SVC)
@@ -30,7 +42,9 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 ### GPU / rendering
 - [x] wgpu 24 software preview pipeline (`src/core/gpu/`)
   — `bytes_to_bitmap` → RGBA software rasterizer → wgpu offscreen
-- [x] DXIL→shader translation stubs (`src/gpu/translation`)
+- [x] DXIL→shader translation stubs (`src/gpu/translation`) +
+  Phase-10 `core::shader` pipeline (container→IR→SPIR-V→WGSL→cache);
+  retail DXIL still unsupported → blit fallback
 
 ### GUI
 - [x] Ratatui/crossterm TUI (`--gui-tui`): game library from optical
@@ -82,8 +96,9 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [ ] Guest can't yet drive the wgpu GUI — no framebuffer→renderer path.
 - [ ] GUI still on winit; `--native-wm` proves the C++ WM works but
   the main windowed GUI hasn't migrated to it.
-- [ ] GPU translation is a stub — no real DXIL→SPIR-V pipeline; the
-  "game preview" renders a synthetic bitmap, not game frames
+- [ ] GPU translation covers a documented subset only — no LLVM/DXIL
+  bitcode decode; the "game preview" renders a synthetic bitmap, not
+  game frames
 - [ ] Save states / load states are UI stubs (slot list only)
 - [ ] Cheats are a toggle flag, no cheat engine
 - [ ] Launch/play buttons log to stderr; nothing boots

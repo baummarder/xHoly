@@ -95,5 +95,8 @@ fn kernel_syscall_table_covers_prompt_set() {
     assert_eq!(5, xholy::core::kernel::SYS_READ_FILE);
     assert_eq!(SYS_YIELD, 6);
     assert_eq!(SYS_EXIT, 7);
-    assert_eq!(8, xholy::core::kernel::SYS_TICKS);
+    assert_eq!(8, xholy::core::kernel::SYS_SUSPEND);
+    assert_eq!(16, xholy::core::kernel::SYS_SET_CONTEXT);
+    // Ticks moved to svc#17 (svc#8 is Suspend in the Phase-10 table).
+    assert_eq!(17, xholy::core::kernel::SYS_TICKS);
 }

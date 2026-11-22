@@ -1,127 +1,118 @@
-//! Xbox kernel emulation stub — Phase 8.
+//! Xbox kernel emulation stub — Phase 8/10.
 //!
 //! Simulates the *shape* of the Xbox kernel ABI on top of the real
 //! AArch64 interpreter ([`crate::core::cpu::interpreter`]):
 //!
-//! - **Memory layout** — kernel/user regions as address constants.
+//! - **Memory layout** — [`memory`] region table (kernel/user/device/
+//!   paged-pool) as address constants.
 //! - **System calls** — `SVC` instructions land here; x0 = call number,
-//!   x1–x7 = arguments (the de-facto AArch64 ABI).
-//! - **Scheduler** — a round-robin thread table; `Sleep`/`Yield`
-//!   rotate the run queue. Thread contexts are full register snapshots
-//!   so switching is real, not cosmetic.
+//!   x1–x7 = arguments (the de-facto AArch64 ABI). svc#0–16 per the
+//!   Phase-10 table; `SYS_TICKS` moved to 17 to free svc#8 for Suspend.
+//! - **Scheduler** — [`scheduler`] round-robin with context snapshots.
+//! - **Objects** — [`syscall::KernelObjects`] heaps/events/files/devices.
+//! - **Interrupts** — [`interrupt::Gic`] timer + IRQ stub.
+//! - **MMIO** — [`mmio::MmioSpace`] device apertures.
+//! - **Console** — [`console::KernelConsole`] buffered kprint + panic.
 //!
-//! This is intentionally a *stub*: it services enough calls for a
-//! "Hello, xHoly!" guest program (console write, sleep, thread
-//! create/yield) — not the real Xbox kernel ABI (which uses the XAM /
-//! executable-loader path, not raw SVCs).
+//! This is intentionally a *stub*: it services enough calls for
+//! guest programs (console write, sleep, threads, heaps) — not the
+//! real Xbox kernel ABI (which uses the XAM / executable-loader path,
+//! not raw SVCs).
+
+pub mod console;
+pub mod interrupt;
+pub mod memory;
+pub mod mmio;
+pub mod scheduler;
+pub mod syscall;
+
+pub use console::KernelConsole;
+pub use interrupt::Gic;
+pub use memory::{layout as memory_layout, region_of, MemoryRegion};
+pub use mmio::MmioSpace;
+pub use scheduler::{
+    round_robin, Thread, THREAD_DEAD, THREAD_READY, THREAD_SLEEPING, THREAD_SUSPENDED,
+};
+pub use syscall::{KernelObjects, HEAP_ARENA_SIZE, HEAP_BASE};
 
 use crate::core::cpu::interpreter::{Arm64Cpu, SvcCall};
 
 // ---------------------------------------------------------------------------
-// Memory layout (Xbox-flavored, simplified)
+// Memory layout constants (re-exported from memory.rs for compat)
 // ---------------------------------------------------------------------------
 
-/// Kernel image base — low canonical addresses, like the real Xbox
-/// kernel region.
-pub const KERNEL_BASE: u64 = 0x8000_0000_0000;
-/// End of the kernel image region.
-pub const KERNEL_END: u64 = KERNEL_BASE + 0x10_0000; // 1 MiB
-/// User address space base (games load here).
-pub const USER_BASE: u64 = 0x8000_0100_0000;
+pub use memory::{KERNEL_BASE, KERNEL_END, USER_BASE, USER_END};
 /// Console/UART MMIO window inside guest memory.
 pub const CONSOLE_BASE: u64 = 0x0000_F000_0000_0000;
 pub const CONSOLE_SIZE: u64 = 0x1000;
 
 // ---------------------------------------------------------------------------
-// Syscall numbers (xHoly-assigned; mirrors the prompt's svc#N scheme)
+// Syscall numbers — Phase-10 table (x0 = number, x1–x7 = args)
 // ---------------------------------------------------------------------------
 
 /// svc#0 — write bytes to the kernel console.
 pub const SYS_WRITE: u64 = 0;
-/// svc#1 — create a thread (records a context snapshot).
+/// svc#1 — create a thread.
 pub const SYS_CREATE_THREAD: u64 = 1;
-/// svc#2 — create a process (stub: records entry point).
+/// svc#2 — create a process.
 pub const SYS_CREATE_PROCESS: u64 = 2;
-/// svc#3 — sleep `x1` ticks (scheduler yields).
+/// svc#3 — sleep `x1` ticks.
 pub const SYS_SLEEP: u64 = 3;
-/// svc#4 — write file (stub: appends path+data to console log).
+/// svc#4 — write file.
 pub const SYS_WRITE_FILE: u64 = 4;
-/// svc#5 — read file (stub: zero-fills the buffer, returns 0).
+/// svc#5 — read file.
 pub const SYS_READ_FILE: u64 = 5;
 /// svc#6 — yield to the next thread.
 pub const SYS_YIELD: u64 = 6;
 /// svc#7 — exit the current thread/process.
 pub const SYS_EXIT: u64 = 7;
-/// svc#8 — query ticks (returns a monotonically increasing counter).
-pub const SYS_TICKS: u64 = 8;
+/// svc#8 — suspend a thread.
+pub const SYS_SUSPEND: u64 = 8;
+/// svc#9 — resume a thread.
+pub const SYS_RESUME: u64 = 9;
+/// svc#10 — create a heap.
+pub const SYS_CREATE_HEAP: u64 = 10;
+/// svc#11 — heap allocation.
+pub const SYS_HEAP_ALLOC: u64 = 11;
+/// svc#12 — heap free.
+pub const SYS_HEAP_FREE: u64 = 12;
+/// svc#13 — create event.
+pub const SYS_CREATE_EVENT: u64 = 13;
+/// svc#14 — open file.
+pub const SYS_OPEN_FILE: u64 = 14;
+/// svc#15 — create device.
+pub const SYS_CREATE_DEVICE: u64 = 15;
+/// svc#16 — set thread context.
+pub const SYS_SET_CONTEXT: u64 = 16;
+/// svc#17 — query ticks (xHoly extension; kept off the prompt's
+/// svc#8 which is Suspend in the Phase-10 table).
+pub const SYS_TICKS: u64 = 17;
 
 // ---------------------------------------------------------------------------
-// Scheduler
+// Kernel
 // ---------------------------------------------------------------------------
 
-/// A thread = a full architectural snapshot.
-#[derive(Debug, Clone)]
-pub struct Thread {
-    /// Thread id.
-    pub id: u64,
-    /// Saved X0–X30.
-    pub regs: [u64; 31],
-    /// Saved SP / PC / LR.
-    pub sp: u64,
-    pub pc: u64,
-    /// State flags.
-    pub n: bool,
-    pub z: bool,
-    pub c: bool,
-    pub v: bool,
-    /// State: 0 = ready, 1 = sleeping, 2 = dead.
-    pub state: u8,
-    /// Ticks remaining before a sleeping thread wakes.
-    pub sleep_ticks: u64,
-}
-
-impl Thread {
-    /// Snapshot the live CPU into a thread context.
-    pub fn from_cpu(id: u64, cpu: &Arm64Cpu) -> Self {
-        Self {
-            id,
-            regs: cpu.regs,
-            sp: cpu.sp,
-            pc: cpu.pc,
-            n: cpu.n,
-            z: cpu.z,
-            c: cpu.c,
-            v: cpu.v,
-            state: 0,
-            sleep_ticks: 0,
-        }
-    }
-
-    /// Restore this context into the CPU.
-    pub fn restore(&self, cpu: &mut Arm64Cpu) {
-        cpu.regs = self.regs;
-        cpu.sp = self.sp;
-        cpu.pc = self.pc;
-        cpu.n = self.n;
-        cpu.z = self.z;
-        cpu.c = self.c;
-        cpu.v = self.v;
-    }
-}
-
-/// The kernel stub: syscall table + thread scheduler + tick counter.
+/// The kernel stub: syscall dispatch + thread scheduler + objects.
 #[derive(Default)]
 pub struct Kernel {
     /// All known threads (index 0 = main thread).
     pub threads: Vec<Thread>,
     /// Index of the currently running thread.
     pub current: usize,
-    /// Monotonic tick counter (incremented per syscall/yield).
+    /// Monotonic tick counter.
     pub ticks: u64,
     /// Process records created via SYS_CREATE_PROCESS.
     pub processes: Vec<u64>,
-    /// Console/file log lines (WriteFile stub output).
+    /// Console/file log lines.
     pub log: Vec<String>,
+    /// Kernel objects: heaps/events/files/devices (Phase 10).
+    pub objects: KernelObjects,
+    /// Buffered kernel console.
+    pub console: KernelConsole,
+    /// Interrupt controller stub.
+    pub gic: Gic,
+    /// MMIO region registry.
+    pub mmio: MmioSpace,
 }
 
 impl Kernel {
@@ -133,15 +124,15 @@ impl Kernel {
             ticks: 0,
             processes: Vec::new(),
             log: Vec::new(),
+            objects: KernelObjects::new(),
+            console: KernelConsole::default(),
+            gic: Gic::new(),
+            mmio: MmioSpace::with_defaults(),
         }
     }
 
     /// Install this kernel as the CPU's SVC handler.
     pub fn attach(&mut self, cpu: &mut Arm64Cpu) {
-        // The handler needs shared access to the kernel — use a raw
-        // pointer wrapped in the closure. Safe here because `attach`
-        // borrows both for 'static-ish use within the same scope; the
-        // caller must not move the Kernel while the CPU runs.
         let kernel_ptr = self as *mut Kernel;
         cpu.svc_handler = Some(Box::new(move |cpu, call| {
             // SAFETY: kernel_ptr is valid for the lifetime of the CPU's
@@ -149,7 +140,6 @@ impl Kernel {
             let kernel = unsafe { &mut *kernel_ptr };
             kernel.handle_syscall(cpu, call)
         }));
-        // Map the console aperture so STR to CONSOLE_BASE appends output.
         cpu.console_base = CONSOLE_BASE;
         cpu.console_size = CONSOLE_SIZE;
     }
@@ -157,9 +147,10 @@ impl Kernel {
     /// Dispatch one syscall. Returns `false` to halt the CPU (SYS_EXIT).
     pub fn handle_syscall(&mut self, cpu: &mut Arm64Cpu, call: &SvcCall) -> bool {
         self.ticks += 1;
+        self.gic.tick(); // timer IRQ bookkeeping per syscall
+        scheduler::age_sleepers(&mut self.threads);
         match call.args[0] {
             SYS_WRITE => {
-                // x1 = guest addr, x2 = length → copy bytes to output.
                 let addr = call.args[1];
                 let len = call.args[2].min(4096) as usize;
                 for i in 0..len {
@@ -170,15 +161,13 @@ impl Kernel {
                 }
             }
             SYS_CREATE_THREAD => {
-                // x1 = entry pc. Snapshot current context as the new
-                // thread's initial state (real kernels copy the parent).
                 let entry = call.args[1];
                 let mut t = Thread::from_cpu(self.threads.len() as u64, cpu);
                 t.pc = entry;
-                t.state = 0;
+                t.state = THREAD_READY;
                 let id = t.id;
                 self.threads.push(t);
-                cpu.set_reg(0, id); // return thread id in x0
+                cpu.set_reg(0, id);
             }
             SYS_CREATE_PROCESS => {
                 let entry = call.args[1];
@@ -186,14 +175,13 @@ impl Kernel {
                 cpu.set_reg(0, self.processes.len() as u64 - 1);
             }
             SYS_SLEEP => {
-                // x1 = ticks to sleep.
                 let ticks = call.args[1];
-                self.threads[self.current].state = 1;
-                self.threads[self.current].sleep_ticks = ticks;
+                let cur = &mut self.threads[self.current];
+                cur.state = THREAD_SLEEPING;
+                cur.sleep_ticks = ticks;
                 self.schedule_next();
             }
             SYS_WRITE_FILE => {
-                // x1 = path ptr, x2 = path len, x3 = data ptr, x4 = data len
                 let path = self.read_guest_string(cpu, call.args[1], call.args[2] as usize);
                 let data_len = call.args[4].min(256) as usize;
                 let mut data = Vec::with_capacity(data_len);
@@ -214,8 +202,6 @@ impl Kernel {
                 cpu.set_reg(0, data_len as u64);
             }
             SYS_READ_FILE => {
-                // x1 = path ptr, x2 = path len, x3 = buf, x4 = buf len
-                // Stub: zero-fill the buffer, return 0 bytes read.
                 let buf = call.args[3];
                 let len = call.args[4].min(4096);
                 for i in 0..len {
@@ -223,54 +209,73 @@ impl Kernel {
                 }
                 cpu.set_reg(0, 0);
             }
-            SYS_YIELD => {
-                self.schedule_next();
+            SYS_YIELD => self.schedule_next(),
+            SYS_SUSPEND => {
+                let tid = call.args[1];
+                if let Some(t) = self.threads.iter_mut().find(|t| t.id == tid) {
+                    t.state = THREAD_SUSPENDED;
+                }
+                cpu.set_reg(0, 0);
+            }
+            SYS_RESUME => {
+                let tid = call.args[1];
+                if let Some(t) = self.threads.iter_mut().find(|t| t.id == tid) {
+                    if t.state == THREAD_SUSPENDED {
+                        t.state = THREAD_READY;
+                    }
+                }
+                cpu.set_reg(0, 0);
+            }
+            SYS_CREATE_HEAP => {
+                let h = self.objects.create_heap(cpu, call.args[1]);
+                cpu.set_reg(0, h);
+            }
+            SYS_HEAP_ALLOC => {
+                let p = self.objects.heap_alloc(cpu, call.args[1], call.args[2]);
+                cpu.set_reg(0, p);
+            }
+            SYS_HEAP_FREE => {
+                let ok = self.objects.heap_free(call.args[1], call.args[2]);
+                cpu.set_reg(0, ok as u64);
+            }
+            SYS_CREATE_EVENT => {
+                cpu.set_reg(0, self.objects.create_event());
+            }
+            SYS_OPEN_FILE => {
+                let h = self.objects.open_file(cpu, call.args[1], call.args[2]);
+                cpu.set_reg(0, h);
+            }
+            SYS_CREATE_DEVICE => {
+                let h = self.objects.create_device(cpu, call.args[1], call.args[2]);
+                cpu.set_reg(0, h);
+            }
+            SYS_SET_CONTEXT => {
+                let ctx = call.args[1];
+                let r = self.objects.set_context(cpu, ctx);
+                cpu.set_reg(0, r);
             }
             SYS_TICKS => {
                 cpu.set_reg(0, self.ticks);
             }
             SYS_EXIT => {
-                self.threads[self.current].state = 2;
-                if self.threads.iter().all(|t| t.state == 2) {
-                    return false; // halt CPU
+                self.threads[self.current].state = THREAD_DEAD;
+                if self.threads.iter().all(|t| t.state == THREAD_DEAD) {
+                    return false;
                 }
                 self.schedule_next();
             }
             _ => {
-                // Unknown syscall — log and continue.
-                self.log.push(format!("unknown syscall #{}", call.args[0]));
+                let msg = format!("unknown syscall #{}", call.args[0]);
+                self.log.push(msg.clone());
+                self.console.klog(msg);
             }
         }
         true
     }
 
-    /// Round-robin: advance `current` to the next ready thread,
-    /// decrementing sleep counters and waking threads whose time is up.
-    /// If no other thread is ready, stay on the current one.
+    /// Round-robin step (delegates to [`scheduler::round_robin`]).
     pub fn schedule_next(&mut self) {
-        let n = self.threads.len();
-        if n <= 1 {
-            return;
-        }
-        // Age sleep timers.
-        for t in &mut self.threads {
-            if t.state == 1 && t.sleep_ticks > 0 {
-                t.sleep_ticks -= 1;
-                if t.sleep_ticks == 0 {
-                    t.state = 0;
-                }
-            }
-        }
-        // Snapshot current thread, find next ready.
-        // (Caller is responsible for saving regs before switching —
-        //  the CPU's svc path restores via Thread::restore on resume.)
-        for i in 1..=n {
-            let idx = (self.current + i) % n;
-            if self.threads[idx].state == 0 {
-                self.current = idx;
-                return;
-            }
-        }
+        round_robin(&mut self.threads, &mut self.current);
     }
 
     /// Read a NUL- or length-bounded string from guest memory.
@@ -296,8 +301,6 @@ mod tests {
         let mut cpu = Arm64Cpu::new(64 * 1024);
         let mut kernel = Kernel::new(&cpu);
         kernel.attach(&mut cpu);
-        // Guest program: write "Hi" via SYS_WRITE, sleep 1, exit.
-        // We simulate by calling handle_syscall directly.
         cpu.memory[0x1000] = b'H';
         cpu.memory[0x1001] = b'i';
         let call = SvcCall {
@@ -312,7 +315,7 @@ mod tests {
             args: [SYS_SLEEP, 5, 0, 0, 0, 0, 0, 0],
         };
         kernel.handle_syscall(&mut cpu, &call);
-        assert_eq!(kernel.threads[0].state, 1);
+        assert_eq!(kernel.threads[0].state, THREAD_SLEEPING);
         assert_eq!(kernel.threads[0].sleep_ticks, 5);
     }
 
@@ -320,7 +323,6 @@ mod tests {
     fn scheduler_round_robins() {
         let cpu = Arm64Cpu::new(64 * 1024);
         let mut kernel = Kernel::new(&cpu);
-        // Add a second ready thread.
         kernel.threads.push(Thread::from_cpu(1, &cpu));
         kernel.current = 0;
         kernel.schedule_next();
@@ -338,5 +340,65 @@ mod tests {
             args: [SYS_EXIT, 0, 0, 0, 0, 0, 0, 0],
         };
         assert!(!kernel.handle_syscall(&mut cpu, &call));
+    }
+
+    #[test]
+    fn extended_syscalls_dispatch() {
+        let mut cpu = Arm64Cpu::new(64 * 1024);
+        let mut kernel = Kernel::new(&cpu);
+        // CreateHeap → handle in x0
+        kernel.handle_syscall(
+            &mut cpu,
+            &SvcCall {
+                number: 0,
+                args: [SYS_CREATE_HEAP, 0, 0, 0, 0, 0, 0, 0],
+            },
+        );
+        let heap = cpu.regs[0];
+        assert_ne!(heap, 0);
+        // HeapAlloc
+        kernel.handle_syscall(
+            &mut cpu,
+            &SvcCall {
+                number: 0,
+                args: [SYS_HEAP_ALLOC, heap, 128, 0, 0, 0, 0, 0],
+            },
+        );
+        assert!(cpu.regs[0] >= HEAP_BASE);
+        // CreateEvent
+        kernel.handle_syscall(
+            &mut cpu,
+            &SvcCall {
+                number: 0,
+                args: [SYS_CREATE_EVENT, 0, 0, 0, 0, 0, 0, 0],
+            },
+        );
+        assert_ne!(cpu.regs[0], 0);
+        // Suspend + Resume thread 0
+        kernel.handle_syscall(
+            &mut cpu,
+            &SvcCall {
+                number: 0,
+                args: [SYS_SUSPEND, 0, 0, 0, 0, 0, 0, 0],
+            },
+        );
+        assert_eq!(kernel.threads[0].state, THREAD_SUSPENDED);
+        kernel.handle_syscall(
+            &mut cpu,
+            &SvcCall {
+                number: 0,
+                args: [SYS_RESUME, 0, 0, 0, 0, 0, 0, 0],
+            },
+        );
+        assert_eq!(kernel.threads[0].state, THREAD_READY);
+        // Ticks moved to svc#17
+        kernel.handle_syscall(
+            &mut cpu,
+            &SvcCall {
+                number: 0,
+                args: [SYS_TICKS, 0, 0, 0, 0, 0, 0, 0],
+            },
+        );
+        assert!(cpu.regs[0] > 0);
     }
 }
