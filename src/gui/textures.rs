@@ -253,6 +253,185 @@ pub mod gpu {
     }
 }
 
+/// xHoly texture container header (DXBC-style, Phase 12).
+///
+/// 17 bytes: magic `DXBC` + format u8 + flags u32 + width u32 +
+/// height u32 (little-endian, unaligned).
+/// Pixel payload follows immediately; its encoding depends on `format`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DxbcTextureHeader {
+    /// [`TextureFormat`] discriminant.
+    pub format: TextureFormat,
+    /// Reserved flag bits.
+    pub flags: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Encoded texture formats understood by [`decode_dxbc`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TextureFormat {
+    /// Uncompressed RGBA8.
+    Rgba8888 = 1,
+    /// BC1/DXT1 (4bpp block compression) — decoded to RGBA8.
+    Dxt1 = 2,
+    /// BC7 — header parses but decoding is not implemented yet;
+    /// [`decode_dxbc`] returns a dummy RGBA8 image honestly.
+    Bc7 = 3,
+}
+
+impl TextureFormat {
+    /// Bytes per pixel for uncompressed formats (BC formats use blocks).
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            Self::Rgba8888 => 4,
+            Self::Dxt1 | Self::Bc7 => 0, // block-compressed
+        }
+    }
+}
+
+/// Parse a DXBC-style texture header. Returns `None` on bad magic,
+/// unknown format, or truncated input.
+pub fn parse_dxbc_header(bytes: &[u8]) -> Option<DxbcTextureHeader> {
+    if bytes.len() < 17 || &bytes[0..4] != b"DXBC" {
+        return None;
+    }
+    let format = match bytes[4] {
+        1 => TextureFormat::Rgba8888,
+        2 => TextureFormat::Dxt1,
+        3 => TextureFormat::Bc7,
+        _ => return None,
+    };
+    Some(DxbcTextureHeader {
+        format,
+        flags: u32::from_le_bytes(bytes[5..9].try_into().ok()?),
+        width: u32::from_le_bytes(bytes[9..13].try_into().ok()?),
+        height: u32::from_le_bytes(bytes[13..17].try_into().ok()?),
+    })
+}
+
+/// Decode a DXBC-container image to RGBA8.
+///
+/// - `Rgba8888`: payload copied verbatim.
+/// - `Dxt1`: real BC1 decode (4bpp blocks, 1/0-bit alpha).
+/// - `Bc7`: **not implemented** — returns a magenta dummy so callers
+///   get a visible placeholder instead of garbage (honest fallback).
+///
+/// Returns `Err` on truncated payloads or unknown formats.
+pub fn decode_dxbc(bytes: &[u8]) -> Result<RgbaImage, String> {
+    let h = parse_dxbc_header(bytes).ok_or_else(|| "bad DXBC header".to_string())?;
+    let payload = &bytes[17..];
+    match h.format {
+        TextureFormat::Rgba8888 => {
+            let need = (h.width * h.height * 4) as usize;
+            if payload.len() < need {
+                return Err("truncated RGBA8888 payload".into());
+            }
+            Ok(RgbaImage {
+                width: h.width,
+                height: h.height,
+                pixels: payload[..need].to_vec(),
+            })
+        }
+        TextureFormat::Dxt1 => decode_dxt1(payload, h.width, h.height),
+        TextureFormat::Bc7 => {
+            // BC7 decode is not implemented; emit a visible placeholder.
+            log::warn!(
+                "xHoly: BC7 texture {}x{} — dummy fallback",
+                h.width,
+                h.height
+            );
+            Ok(RgbaImage::solid(
+                h.width.max(1),
+                h.height.max(1),
+                [255, 0, 255, 255],
+            ))
+        }
+    }
+}
+
+/// Decode BC1/DXT1 (8-byte blocks: two RGB565 endpoints + 4×4 2-bit
+/// indices) to RGBA8. 1-bit alpha via endpoint-0 > endpoint-1.
+fn decode_dxt1(data: &[u8], width: u32, height: u32) -> Result<RgbaImage, String> {
+    let bw = width.div_ceil(4);
+    let bh = height.div_ceil(4);
+    let need = (bw * bh * 8) as usize;
+    if data.len() < need {
+        return Err(format!("truncated DXT1 payload: {} < {}", data.len(), need));
+    }
+    let mut img = RgbaImage::solid(width, height, [0, 0, 0, 0]);
+    for by in 0..bh {
+        for bx in 0..bw {
+            let off = ((by * bw + bx) * 8) as usize;
+            let c0 = u16::from_le_bytes([data[off], data[off + 1]]);
+            let c1 = u16::from_le_bytes([data[off + 2], data[off + 3]]);
+            let bits =
+                u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
+            let (r0, g0, b0) = rgb565(c0);
+            let (r1, g1, b1) = rgb565(c1);
+            let has_alpha = c0 > c1;
+            // 4-color palette; 3-color adds transparent index 3.
+            let pal = if has_alpha {
+                [
+                    (r0, g0, b0, 255u8),
+                    (r1, g1, b1, 255u8),
+                    (
+                        ((2 * r0 as u16 + r1 as u16) / 3) as u8,
+                        ((2 * g0 as u16 + g1 as u16) / 3) as u8,
+                        ((2 * b0 as u16 + b1 as u16) / 3) as u8,
+                        255,
+                    ),
+                    (0, 0, 0, 0),
+                ]
+            } else {
+                [
+                    (r0, g0, b0, 255u8),
+                    (r1, g1, b1, 255u8),
+                    (
+                        ((r0 as u16 + r1 as u16) / 2) as u8,
+                        ((g0 as u16 + g1 as u16) / 2) as u8,
+                        ((b0 as u16 + b1 as u16) / 2) as u8,
+                        255,
+                    ),
+                    (
+                        ((r0 as u16 + 2 * r1 as u16) / 3) as u8,
+                        ((g0 as u16 + 2 * g1 as u16) / 3) as u8,
+                        ((b0 as u16 + 2 * b1 as u16) / 3) as u8,
+                        255,
+                    ),
+                ]
+            };
+            for py in 0..4 {
+                for px in 0..4 {
+                    let x = bx * 4 + px;
+                    let y = by * 4 + py;
+                    if x >= width || y >= height {
+                        continue;
+                    }
+                    let idx = ((bits >> ((py * 4 + px) * 2)) & 3) as usize;
+                    let (r, g, b, a) = pal[idx];
+                    let i = ((y * width + x) * 4) as usize;
+                    img.pixels[i..i + 4].copy_from_slice(&[r, g, b, a]);
+                }
+            }
+        }
+    }
+    Ok(img)
+}
+
+/// Expand RGB565 to (r,g,b) u8.
+fn rgb565(c: u16) -> (u8, u8, u8) {
+    let r = (c >> 11) & 0x1F;
+    let g = (c >> 5) & 0x3F;
+    let b = c & 0x1F;
+    (
+        ((r * 255 + 15) / 31) as u8,
+        ((g * 255 + 31) / 63) as u8,
+        ((b * 255 + 15) / 31) as u8,
+    )
+}
+
 /// Cache directory helpers shared with the shader cache.
 pub fn cache_root() -> PathBuf {
     dirs_next_or_home()
@@ -288,6 +467,62 @@ mod tests {
                                                 // Pixel check: atlas at (e1.x, e1.y) is red.
         let i = ((e1.y * 64 + e1.x) * 4) as usize;
         assert_eq!(&atlas.image.pixels[i..i + 4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn dxbc_rgba8888_roundtrip() {
+        let mut bytes = b"DXBC".to_vec();
+        bytes.push(TextureFormat::Rgba8888 as u8);
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // flags
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // w
+        bytes.extend_from_slice(&1u32.to_le_bytes()); // h
+        bytes.extend_from_slice(&[1, 2, 3, 4]);
+        let img = decode_dxbc(&bytes).unwrap();
+        assert_eq!((img.width, img.height), (1, 1));
+        assert_eq!(img.pixels, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn dxbc_dxt1_decodes_solid_block() {
+        // 4x4 DXT1 block: c0=white(0xFFFF→actually 0xFFFF is white),
+        // c1=black → indices 0 pick c0.
+        let mut bytes = b"DXBC".to_vec();
+        bytes.push(TextureFormat::Dxt1 as u8);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&0xFFFFu16.to_le_bytes()); // c0 white
+        bytes.extend_from_slice(&0x0000u16.to_le_bytes()); // c1 black
+        bytes.extend_from_slice(&0u32.to_le_bytes()); // all indices 0 → white
+        let img = decode_dxbc(&bytes).unwrap();
+        assert_eq!(img.pixels.len(), 4 * 4 * 4);
+        assert_eq!(&img.pixels[0..4], &[255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn dxbc_bc7_returns_dummy() {
+        let mut bytes = b"DXBC".to_vec();
+        bytes.push(TextureFormat::Bc7 as u8);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend(std::iter::repeat_n(0u8, 16));
+        let img = decode_dxbc(&bytes).unwrap();
+        assert_eq!((img.width, img.height), (4, 4));
+        assert_eq!(img.pixels[0], 255); // magenta placeholder
+    }
+
+    #[test]
+    fn dxbc_rejects_bad_magic_and_truncation() {
+        assert!(parse_dxbc_header(b"NOPE").is_none());
+        assert!(decode_dxbc(b"DXBC").is_err());
+        let mut t = b"DXBC".to_vec();
+        t.push(1u8);
+        t.extend(0u32.to_le_bytes()); // flags
+        t.extend(4u32.to_le_bytes()); // w
+        t.extend(4u32.to_le_bytes()); // h
+        t.extend(std::iter::repeat_n(0u8, 3)); // payload too short
+        assert!(decode_dxbc(&t).is_err());
     }
 
     #[test]

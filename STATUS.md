@@ -89,6 +89,13 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   z-order, hover/press/drag, Clicked/Dragged events, framebuffer draw
 - [x] **Texture atlas + ISO-offset loader + wgpu texture cache**
   (`src/gui/textures.rs`)
+- [x] **Phase 12 rendering additions** — `src/gui/windowed/
+  frame_buffer.rs` (fused color+depth `FrameBuffer`, Load/Clear pass
+  API, dark-Xbox clear color) and DXBC-style texture containers in
+  `src/gui/textures.rs`: `DXBC` header parse, uncompressed RGBA8888
+  passthrough, real BC1/DXT1 decode, BC7 → visible magenta dummy
+  (not implemented). `tests/perf_tests.rs` bounds CPU-side costs
+  (atlas pack <20 ms, 1080p tonemap, uniform math).
 - [x] **Shader cache** (`src/gui/shader_cache.rs`) — validated WGSL
   copies + FNV manifest under the platform cache dir
 - [x] Perf frame-drop logging (sustained <50% FPS limit → warning)

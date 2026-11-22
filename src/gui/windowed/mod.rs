@@ -7,6 +7,7 @@
 //! the same pipeline offscreen (no window) for tests and
 //! `--gui-headless`.
 
+pub mod frame_buffer;
 pub mod input;
 pub mod postfx;
 pub mod preview;
