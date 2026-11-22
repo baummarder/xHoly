@@ -260,7 +260,20 @@ fn render_info_panel(
     w: u32,
 ) {
     draw_text(fb, fb_w, fb_h, x + 12, top + 10, "PERFORMANCE", DIM_GOLD, 1);
-    let mut y = top + 34;
+    if !state.gpu_label.is_empty() {
+        draw_text(fb, fb_w, fb_h, x + 12, top + 22, "GPU API", GRAY, 1);
+        draw_text(
+            fb,
+            fb_w,
+            fb_h,
+            x + 12,
+            top + 34,
+            &truncate(&state.gpu_label.to_uppercase(), 24),
+            GOLD,
+            1,
+        );
+    }
+    let mut y = top + 56;
     let rows: [(String, String); 5] = [
         ("FPS".into(), format!("{:.0}", state.fps)),
         ("CPU".into(), format!("{:.0}%", state.cpu_usage * 100.0)),

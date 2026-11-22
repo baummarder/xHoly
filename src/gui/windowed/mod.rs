@@ -14,6 +14,8 @@ pub mod state;
 pub mod ui;
 pub mod window;
 
+use crate::gui::gpu_api_detector::{self, GpuApi, GpuApiPreference};
+use crate::gui::renderer::GuiFrameRenderer;
 use crate::gui::{GameListItem, GuiConfig};
 use input::{GuiAction, InputState};
 use state::WindowedGuiState;
@@ -30,8 +32,10 @@ pub struct WindowApp {
     state: WindowedGuiState,
     input: InputState,
     window: Option<Arc<winit::window::Window>>,
-    renderer: Option<renderer::WgpuRenderer>,
+    renderer: Option<Box<dyn GuiFrameRenderer>>,
     instance: wgpu::Instance,
+    /// Detected GPU API (drives backend wrapping + info panel).
+    gpu_api: GpuApi,
     last_tick: Instant,
     fps_ema: f32,
     /// Set when the app should exit.
@@ -40,9 +44,11 @@ pub struct WindowApp {
 
 impl WindowApp {
     /// Create the app (window + renderer are created in [`Self::resumed`]).
-    pub fn new(config: GuiConfig) -> Self {
+    ///
+    /// `backends` restricts the wgpu instance to the detected GPU API.
+    pub fn new(config: GuiConfig, backends: wgpu::Backends, gpu_api: GpuApi) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+            backends,
             ..Default::default()
         });
         let state = WindowedGuiState {
@@ -56,6 +62,7 @@ impl WindowApp {
             window: None,
             renderer: None,
             instance,
+            gpu_api,
             last_tick: Instant::now(),
             fps_ema: 0.0,
             should_exit: false,
@@ -63,8 +70,8 @@ impl WindowApp {
     }
 
     /// Headless constructor: app state without any window/surface.
-    pub fn new_headless(config: GuiConfig) -> Self {
-        let mut app = Self::new(config);
+    pub fn new_headless(config: GuiConfig, gpu_api: GpuApi) -> Self {
+        let mut app = Self::new(config, gpu_api_detector::backends_for(gpu_api), gpu_api);
         app.window = None;
         app
     }
@@ -75,7 +82,7 @@ impl WindowApp {
         let (w, h) = self.state.resolution;
         let (fb, _layout) = ui::composite(&self.state, w, h);
         if let Some(r) = self.renderer.as_mut() {
-            r.render_rgba(&fb, w, h)?;
+            r.render_frame(&fb, w, h)?;
         }
         self.tick_fps();
         Ok(())
@@ -190,7 +197,7 @@ impl ApplicationHandler for WindowApp {
             }
         };
         let size = window.inner_size();
-        let renderer = match renderer::WgpuRenderer::new_surface(
+        let wgpu_renderer = match renderer::WgpuRenderer::new_surface(
             &self.instance,
             surface,
             size.width,
@@ -203,9 +210,14 @@ impl ApplicationHandler for WindowApp {
                 return;
             }
         };
+        // Wrap in the GL-fallback type when the detected API is OpenGL.
+        let boxed: Box<dyn GuiFrameRenderer> = match self.gpu_api {
+            GpuApi::OpenGL => Box::new(crate::gui::gl_backend::GlBackend::new(wgpu_renderer)),
+            _ => Box::new(wgpu_renderer),
+        };
         self.state.resolution = (size.width, size.height);
         self.window = Some(window);
-        self.renderer = Some(renderer);
+        self.renderer = Some(boxed);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -295,10 +307,35 @@ impl WindowApp {
 }
 
 /// Run the windowed GUI (blocks until the window closes).
-pub fn run_windowed(config: GuiConfig) -> Result<(), String> {
+///
+/// `pref` selects the GPU API: `Auto` probes Vulkan → OpenGL →
+/// Software; explicit values force that backend.
+pub fn run_windowed(config: GuiConfig, pref: GpuApiPreference) -> Result<(), String> {
+    let detection = gpu_api_detector::detect_with_preference(pref);
+    gpu_api_detector::save_detection(&detection);
+    eprintln!(
+        "xHoly: GPU API = {} ({})",
+        detection.describe(),
+        detection.backend
+    );
+
+    // Software has no presentable backend — try GL once more for the
+    // surface path, else tell the user to use the TUI.
+    let backends = if detection.api == GpuApi::Software {
+        wgpu::Backends::GL
+    } else {
+        gpu_api_detector::backends_for(detection.api)
+    };
+    if backends.is_empty() {
+        return Err(
+            "no GPU API available for windowed mode; try --gui-tui or --gui-software".into(),
+        );
+    }
+
     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = WindowApp::new(config);
+    let mut app = WindowApp::new(config, backends, detection.api);
+    app.state.gpu_label = detection.describe();
     event_loop
         .run_app(&mut app)
         .map_err(|e| format!("event loop: {e}"))?;
@@ -307,30 +344,68 @@ pub fn run_windowed(config: GuiConfig) -> Result<(), String> {
 
 /// Run the GUI headless: composite + render `frames` frames offscreen.
 ///
-/// Used by `--gui-headless` and tests. Returns the last composited
-/// framebuffer for verification.
-pub fn run_headless(config: GuiConfig, frames: u32) -> Result<Vec<u8>, String> {
+/// Used by `--gui-headless` and tests. With `GpuApi::Software` (or a
+/// failed GPU probe under `Auto`) frames are composited on the CPU via
+/// [`software_renderer::SoftwareRenderer`]; otherwise the wgpu
+/// offscreen path is used. Returns the last composited framebuffer.
+pub fn run_headless(
+    config: GuiConfig,
+    frames: u32,
+    pref: GpuApiPreference,
+) -> Result<Vec<u8>, String> {
+    let detection = gpu_api_detector::detect_with_preference(pref);
+    eprintln!(
+        "xHoly: GPU API = {} ({})",
+        detection.describe(),
+        detection.backend
+    );
     let (w, h) = config.window_size;
-    let mut app = WindowApp::new_headless(config);
+    let mut app = WindowApp::new_headless(config, detection.api);
     app.state.resolution = (w, h);
-    app.renderer = Some(renderer::WgpuRenderer::new_offscreen(w, h)?);
+    app.state.gpu_label = detection.describe();
+
+    // Software path: no GPU at all.
+    if detection.api == GpuApi::Software {
+        let mut sw = crate::gui::software_renderer::SoftwareRenderer::new(w, h);
+        let mut last_fb = Vec::new();
+        for _ in 0..frames.max(1) {
+            let (fb, _layout) = ui::composite(&app.state, w, h);
+            sw.render_frame(&fb, w, h)?;
+            last_fb = fb;
+            app.tick_fps();
+            pace(app.config.fps_limit);
+        }
+        return Ok(last_fb);
+    }
+
+    app.renderer = Some(Box::new(
+        renderer::WgpuRenderer::new_offscreen_with_backends(
+            w,
+            h,
+            gpu_api_detector::backends_for(detection.api),
+        )?,
+    ));
 
     let mut last_fb = Vec::new();
     for _ in 0..frames.max(1) {
         let (fb, _layout) = ui::composite(&app.state, w, h);
         last_fb = fb.clone();
         if let Some(r) = app.renderer.as_mut() {
-            r.render_rgba(&fb, w, h)?;
+            r.render_frame(&fb, w, h)?;
         }
         app.tick_fps();
-        // Honor the configured FPS limit roughly.
-        if let Some(limit) = app.config.fps_limit {
-            if limit > 0 {
-                std::thread::sleep(Duration::from_millis(1000 / limit as u64));
-            }
-        }
+        pace(app.config.fps_limit);
     }
     Ok(last_fb)
+}
+
+/// Rough frame pacing for the headless loop.
+fn pace(fps_limit: Option<u32>) {
+    if let Some(limit) = fps_limit {
+        if limit > 0 {
+            std::thread::sleep(Duration::from_millis(1000 / limit as u64));
+        }
+    }
 }
 
 /// Scan games for the windowed library (same sources as the TUI).
@@ -424,7 +499,7 @@ mod tests {
             fps_limit: None,
             ..Default::default()
         };
-        let fb = run_headless(config, 2).expect("headless render");
+        let fb = run_headless(config, 2, GpuApiPreference::Auto).expect("headless render");
         assert_eq!(fb.len(), 320 * 200 * 4);
     }
 }

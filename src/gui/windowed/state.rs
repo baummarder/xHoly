@@ -43,6 +43,8 @@ pub struct WindowedGuiState {
     pub preview_size: (u32, u32),
     /// Theme.
     pub theme: GuiTheme,
+    /// Detected GPU API description for the info panel (e.g. "Vulkan · RTX 4070").
+    pub gpu_label: String,
     /// Mouse position in framebuffer pixels.
     pub mouse: (u32, u32),
     /// Left mouse button held.
@@ -65,6 +67,7 @@ impl Default for WindowedGuiState {
             resolution: (1280, 720),
             preview_size: (320, 180),
             theme: GuiTheme::Dark,
+            gpu_label: String::new(),
             mouse: (0, 0),
             mouse_down: false,
         }

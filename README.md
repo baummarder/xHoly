@@ -112,6 +112,19 @@ xholy --mount "D:\\Games\\mygame.iso" --list # scan an ISO image
 xholy --mount game.iso --mount game-disc2.iso game.xex   # multi-disc
 ```
 
+### GUI
+
+```sh
+xholy --gui                 # windowed GUI (winit + wgpu, auto GPU API)
+xholy --gui-tui             # terminal UI (ratatui)
+xholy --gui-headless        # offscreen render loop (no window)
+xholy --gpu-api vulkan      # force Vulkan (auto|vulkan|opengl|software)
+```
+
+The GUI auto-detects the GPU API (Vulkan → OpenGL → Software) and
+persists the result to `~/.config/xholy/gpu_config.toml`. See
+`docs/gpu-api-support.md` for per-vendor API recommendations.
+
 ### Running
 
 ```sh

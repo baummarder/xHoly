@@ -6,9 +6,17 @@
 //!
 //! Theme: gold `#FFD700` accents on dark `#1a1a1a`, matching the logo.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gl_backend;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod gpu_api_detector;
 pub mod preview;
 pub mod ratatui_backend;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod renderer;
 pub mod settings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod software_renderer;
 pub mod terminal;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wgpu_backend;

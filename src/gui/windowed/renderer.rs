@@ -105,8 +105,18 @@ impl WgpuRenderer {
 
     /// Create a headless offscreen renderer (no window needed).
     pub fn new_offscreen(width: u32, height: u32) -> Result<Self, String> {
+        Self::new_offscreen_with_backends(width, height, wgpu::Backends::PRIMARY)
+    }
+
+    /// Offscreen renderer restricted to specific wgpu backends
+    /// (e.g. `Backends::VULKAN` or `Backends::GL` per GPU detection).
+    pub fn new_offscreen_with_backends(
+        width: u32,
+        height: u32,
+        backends: wgpu::Backends,
+    ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::PRIMARY,
+            backends,
             ..Default::default()
         });
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

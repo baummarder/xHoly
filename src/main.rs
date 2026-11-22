@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use xholy::config::Config;
+use xholy::gui::gpu_api_detector::GpuApiPreference;
 use xholy::gui::GuiConfig;
 use xholy::optical::{detect_drives, game_scanner, VirtualDrive};
 use xholy::Emulator;
@@ -52,6 +53,35 @@ struct Args {
     #[arg(long, hide = true)]
     gui_headless_ratatui: bool,
 
+    /// Force a GPU API for the GUI: auto | vulkan | opengl | software.
+    /// Auto probes Vulkan → OpenGL → Software.
+    #[arg(long, value_name = "API")]
+    gpu_api: Option<String>,
+
+    /// Force Vulkan backend (alias for --gpu-api vulkan).
+    #[arg(long, hide = true)]
+    gpu_vulkan: bool,
+
+    /// Force OpenGL backend (alias for --gpu-api opengl).
+    #[arg(long, hide = true)]
+    gpu_opengl: bool,
+
+    /// Force software renderer (alias for --gpu-api software).
+    #[arg(long, hide = true)]
+    gpu_software: bool,
+
+    /// Shortcut: windowed GUI forced to Vulkan.
+    #[arg(long, hide = true)]
+    gui_vulkan: bool,
+
+    /// Shortcut: windowed GUI forced to OpenGL.
+    #[arg(long, hide = true)]
+    gui_opengl: bool,
+
+    /// Shortcut: windowed GUI forced to software renderer.
+    #[arg(long, hide = true)]
+    gui_software: bool,
+
     /// Run without any UI (explicit headless mode; this is the default
     /// when a game image is supplied without --gui).
     #[arg(long)]
@@ -70,6 +100,29 @@ fn main() {
     env_logger::init();
     let args = Args::parse();
 
+    // Resolve GPU API preference: explicit --gpu-api wins, then the
+    // --gpu-*/--gui-* force flags, else Auto.
+    let gpu_pref = args
+        .gpu_api
+        .as_deref()
+        .and_then(GpuApiPreference::parse)
+        .or(if args.gpu_vulkan || args.gui_vulkan {
+            Some(GpuApiPreference::Vulkan)
+        } else if args.gpu_opengl || args.gui_opengl {
+            Some(GpuApiPreference::OpenGL)
+        } else if args.gpu_software || args.gui_software {
+            Some(GpuApiPreference::Software)
+        } else {
+            None
+        })
+        .unwrap_or_default();
+    if args.gpu_api.is_some()
+        && gpu_pref == GpuApiPreference::Auto
+        && args.gpu_api.as_deref() != Some("auto")
+    {
+        eprintln!("xHoly: warning: unrecognized --gpu-api value, using auto");
+    }
+
     let gui_mode = args.gui || args.gui_wgpu;
     let tui_mode = args.gui_tui || args.gui_headless_ratatui;
     let gui_headless = args.gui_headless || args.gui_headless_wgpu;
@@ -79,7 +132,7 @@ fn main() {
         if gui_headless {
             gui_config.headless = true;
             let frames = args.max_frames.unwrap_or(300) as u32;
-            match xholy::gui::windowed::run_headless(gui_config, frames) {
+            match xholy::gui::windowed::run_headless(gui_config, frames, gpu_pref) {
                 Ok(_) => return,
                 Err(e) => {
                     eprintln!("xHoly: headless GUI failed: {e}");
@@ -95,7 +148,7 @@ fn main() {
             return;
         }
         // Windowed winit+wgpu GUI
-        match xholy::gui::windowed::run_windowed(gui_config) {
+        match xholy::gui::windowed::run_windowed(gui_config, gpu_pref) {
             Ok(()) => return,
             Err(e) => {
                 eprintln!("xHoly: windowed GUI failed: {e}");
