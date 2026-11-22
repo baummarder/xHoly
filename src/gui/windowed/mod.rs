@@ -191,9 +191,44 @@ impl WindowApp {
         eprintln!("xHoly: load state requested");
     }
 
-    fn launch(&self) {
-        if let Some(g) = self.state.selected() {
-            eprintln!("xHoly: launch {} ({})", g.title, g.path.display());
+    /// Launch the selected game through the real loader → ARM64
+    /// interpreter → kernel path (same as the TUI). Guest console
+    /// output lands in `state.console_log`; a written guest framebuffer
+    /// frame lands in `state.guest_frame` and is blitted by the UI.
+    /// When the guest FB stays empty the previous frame is kept.
+    fn launch(&mut self) {
+        let Some(path) = self.state.selected().map(|g| g.path.clone()) else {
+            return;
+        };
+        self.push_log(&format!("xHoly: launching {}", path.display()));
+        match crate::core::loader::game_runner::run_path(&path, 500_000) {
+            Ok(outcome) => {
+                let text = String::from_utf8_lossy(&outcome.report.output);
+                for line in text.lines() {
+                    self.push_log(line);
+                }
+                for line in &outcome.report.kernel_log {
+                    self.push_log(&format!("kernel: {line}"));
+                }
+                if let Some(f) = outcome.report.frame {
+                    self.state.guest_frame = Some(f);
+                }
+                self.push_log(&format!(
+                    "xHoly: guest exited after {} steps",
+                    outcome.report.steps
+                ));
+            }
+            Err(e) => self.push_log(&format!("xHoly: launch failed: {e}")),
+        }
+        self.state.running = false;
+    }
+
+    /// Append a console line, keeping the last 200 entries.
+    fn push_log(&mut self, line: &str) {
+        self.state.console_log.push(line.to_string());
+        if self.state.console_log.len() > 200 {
+            let excess = self.state.console_log.len() - 200;
+            self.state.console_log.drain(..excess);
         }
     }
 
@@ -320,6 +355,7 @@ impl WindowApp {
         for (rect, label) in &layout.buttons {
             if rect.contains(mx, my) {
                 match *label {
+                    "LAUNCH" => self.launch(),
                     "PLAY" | "PAUSE" => self.state.toggle_pause(),
                     "EJECT" => eprintln!("xHoly: eject requested"),
                     "SAVE" => self.save_state(),
@@ -474,10 +510,24 @@ fn scan_games_windowed() -> Vec<GameListItem> {
         let Ok(games) = game_scanner::scan(media.filesystem()) else {
             continue;
         };
+        // Resolve payload paths against the host source (same rule as
+        // the TUI): directories map to root/<payload>, ISO files map to
+        // the ISO itself (run_path dispatches run_iso for those).
+        let host_is_dir = path.is_dir();
         for group in game_scanner::group_multidisc(&games) {
             let discs = group.len().min(u8::MAX as usize) as u8;
             for g in group {
-                items.push(GameListItem::from_scanned(g, discs));
+                let mut item = GameListItem::from_scanned(g, discs);
+                item.path = if host_is_dir {
+                    if g.payload_path.is_empty() {
+                        path.clone()
+                    } else {
+                        path.join(&g.payload_path)
+                    }
+                } else {
+                    path.clone()
+                };
+                items.push(item);
             }
         }
     }
@@ -535,6 +585,82 @@ mod tests {
         // Sidebar pixel should be panel color #262626.
         let i = (100 * 640 + 10) * 4;
         assert_eq!(&fb[i..i + 3], &[0x26, 0x26, 0x26]);
+    }
+
+    #[test]
+    fn launch_runs_guest_and_captures_frame() {
+        // Phase 18: the windowed Launch path runs the real
+        // loader→interpreter→kernel pipeline and captures both the
+        // console output and the guest framebuffer frame.
+        let config = GuiConfig {
+            window_size: (320, 200),
+            fps_limit: None,
+            ..Default::default()
+        };
+        let mut app = WindowApp::new_headless(config, GpuApi::Software);
+        app.state.games.push(GameListItem {
+            title: "xHoly Minimal Guest".into(),
+            path: "games/minimal".into(),
+            cover_art: None,
+            region: "OTHER".into(),
+            discs: 1,
+            release_date: None,
+            is_multi_disc: false,
+            last_played: None,
+        });
+        app.launch();
+        let log = app.state.console_log.join("\n");
+        assert!(log.contains("Hello, xHoly!"), "log was: {log}");
+        let frame = app.state.guest_frame.as_ref().expect("guest frame");
+        assert_eq!(frame.width, 160);
+        assert_eq!(frame.height, 120);
+        // Top-left pixel = "x" color, bottom-right = "y" color.
+        assert_eq!(&frame.pixels[0..4], &[200, 40, 40, 255]);
+        let last = frame.pixels.len() - 4;
+        assert_eq!(&frame.pixels[last..], &[30, 226, 226, 255]);
+    }
+
+    #[test]
+    fn guest_frame_holds_when_guest_writes_nothing() {
+        // Hold-last-frame semantics: launch a guest that exits without
+        // touching the FB aperture — the previous frame must remain.
+        let dir = std::env::temp_dir().join("xholy_hold_frame");
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("nofb.bin");
+        // MOVZ x0,#7 ; SVC ; BRK — exits immediately, no FB writes.
+        let mut bytes = Vec::new();
+        for w in [0xD2800000u32 | (7 << 5), 0xD4000001, 0xD4200000] {
+            bytes.extend_from_slice(&w.to_le_bytes());
+        }
+        std::fs::write(&bin, &bytes).unwrap();
+
+        let config = GuiConfig {
+            window_size: (320, 200),
+            fps_limit: None,
+            ..Default::default()
+        };
+        let mut app = WindowApp::new_headless(config, GpuApi::Software);
+        app.state.games.push(GameListItem {
+            title: "frame".into(),
+            path: "games/minimal".into(),
+            cover_art: None,
+            region: "OTHER".into(),
+            discs: 1,
+            release_date: None,
+            is_multi_disc: false,
+            last_played: None,
+        });
+        app.launch();
+        assert!(app.state.guest_frame.is_some());
+
+        // Second launch: a guest with no framebuffer output.
+        app.state.games[0].path = bin.clone();
+        app.launch();
+        assert!(
+            app.state.guest_frame.is_some(),
+            "last guest frame must be held when the FB is empty"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -141,10 +141,12 @@ xholy --native-wm           # native C++ WM demo window (Windows)
 
 `games/minimal/` is a real on-disk guest image: `default.xex` carries a
 little-endian `XEX2` header (entry RVA, image base, title-id quad) followed
-by an AArch64 payload that writes `Hello, xHoly!` through the kernel's
-SYS_WRITE and exits via SYS_EXIT; `xboxconfig.xml` supplies the title and
-TitleID. The loader strips the header, maps the payload at `USER_BASE`,
-and the ARM64 interpreter runs it end-to-end:
+by an AArch64 payload that writes a two-tone pattern into the guest
+framebuffer aperture (`kernel::GUEST_FB_BASE`, 160×120 RGBA8), prints
+`Hello, xHoly!` through the kernel's SYS_WRITE and exits via SYS_EXIT;
+`xboxconfig.xml` supplies the title and TitleID. The loader strips the
+header, maps the payload at `USER_BASE`, and the ARM64 interpreter runs
+it end-to-end:
 
 ```sh
 xholy --game games/minimal          # prints "Hello, xHoly!"
@@ -152,6 +154,10 @@ xholy --game games/minimal/default.xex   # same, direct XEX file
 xholy --mount games --list          # lists "xHoly Minimal Guest"
 xholy --gui-tui                     # Enter on the game launches it;
                                     # output lands in the Console pane
+xholy --gui                         # LAUNCH button (or Enter / preview
+                                    # click) runs the same path; the guest
+                                    # framebuffer frame is blitted into the
+                                    # preview and output shows in CONSOLE
 ```
 
 Regenerate the fixture with `cargo run --example gen_minimal_game`.

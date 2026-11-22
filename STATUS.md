@@ -136,6 +136,22 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   encryption, or real import directory; XAM stubs return plausible
   constants, not console services; pre-emption is a budget tick on a
   single CPU, not SMP.
+- [x] **Phase 18 guest framebuffer + windowed launch** — guest
+  framebuffer aperture at `kernel::GUEST_FB_BASE` (160×120 RGBA8 +
+  magic/w/h/seq header inside the user VA window). `execution::
+  read_guest_frame` extracts it bounds-checked against both the flat
+  buffer and the kernel memory-layer region table; `RunReport.frame`
+  carries it to the GUI. The bundled `games/minimal` now writes a
+  two-tone pattern ("x"/"y" halves) plus `Hello, xHoly!` in ~96k
+  instructions. The windowed GUI composites the guest frame into the
+  preview instead of the synthetic card, **holds the last frame** when
+  the FB aperture is empty, shows guest output in a CONSOLE pane, and
+  has a real LAUNCH toolbar button (+ Enter / preview click) running
+  `game_runner::run_path` — same path as the TUI.
+  **Honest limits:** one-shot run per launch (no persistent guest
+  timeslice across GUI frames yet); 160×120 fixed guest FB; the
+  windowed GUI still has no guest→GPU draw submission — the guest
+  frame is CPU-composited like the rest of the UI.
 - [x] **Phase 12 rendering additions** — `src/gui/windowed/
   frame_buffer.rs` (fused color+depth `FrameBuffer`, Load/Clear pass
   API, dark-Xbox clear color) and DXBC-style texture containers in
@@ -165,7 +181,10 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   executes in a Rust WASM interpreter, not machine code; a
   dynasm-style JIT remains future work. The guest CPU loop still runs
   the ARM64-style interpreter; `compile_and_run` is the x86-64 entry.
-- [ ] Guest can't yet drive the wgpu GUI — no framebuffer→renderer path.
+- [ ] Guest frames reach the windowed preview via CPU compositing, but
+  there is still no guest→GPU draw path (shaders, swapchain present of
+  guest-rendered content); launches are one-shot runs, not sustained
+  emulation sessions
 - [ ] GUI still on winit; `--native-wm` proves the C++ WM works but
   the main windowed GUI hasn't migrated to it.
 - [ ] GPU translation covers a documented subset only — no LLVM/DXIL
@@ -173,9 +192,9 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   game frames
 - [ ] Save states / load states are UI stubs (slot list only)
 - [ ] Cheats are a toggle flag, no cheat engine
-- [ ] TUI Launch (Enter) runs the real game path and shows console
-  output; the windowed wgpu GUI has no launch action yet and the
-  guest still can't drive rendered frames (Phase 18 GPU leaf pending)
+- [ ] TUI + windowed Launch run the real game path and show console
+  output + guest framebuffer frames; sustained multi-frame guest
+  execution inside the GUI loop is still future work
 - [ ] Audio output is a driver abstraction with no real stream
 - [ ] Controller/HID input not wired to the GUI
 - [ ] The Rust GUI and the C++ window manager are **not integrated** —

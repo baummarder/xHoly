@@ -236,7 +236,8 @@ fn render_toolbar(
     state: &WindowedGuiState,
     toolbar_h: u32,
 ) -> Vec<(Rect, &'static str)> {
-    let labels: [(&'static str, [u8; 4]); 6] = [
+    let labels: [(&'static str, [u8; 4]); 7] = [
+        ("LAUNCH", GOLD),
         (
             "PLAY",
             if state.running && !state.paused {
@@ -433,6 +434,20 @@ fn render_info_panel(
         draw_text(fb, fb_w, fb_h, x + 12, y, line, TEXT, 1);
         y += 18;
     }
+
+    // Guest console output (Phase 18): last launch's stdout/kernel log.
+    if !state.console_log.is_empty() {
+        y += 10;
+        draw_text(fb, fb_w, fb_h, x + 12, y, "CONSOLE", DIM_GOLD, 1);
+        y += 16;
+        for line in state.console_log.iter().rev().take(6).rev() {
+            if y + 14 > fb_h {
+                break;
+            }
+            draw_text(fb, fb_w, fb_h, x + 12, y, &truncate(line, 26), GRAY, 1);
+            y += 14;
+        }
+    }
 }
 
 fn render_preview_area(
@@ -479,8 +494,22 @@ fn render_preview_area(
     };
 
     // Render the game preview and blit centered (letterboxed).
+    // Phase 18: when the guest wrote a framebuffer frame, blit *that*
+    // instead of the synthetic preview card. The frame is held in
+    // state across composites, so an empty guest FB keeps the last
+    // frame on screen rather than resetting to black.
     let (pw, ph) = fit_size(state.preview_size.0, state.preview_size.1, area.w, area.h);
-    let px = render_game_preview(game, pw, ph);
+    let px = if let Some(gf) = &state.guest_frame {
+        super::preview::scale_rgba(
+            &gf.pixels,
+            gf.width as usize,
+            gf.height as usize,
+            pw as usize,
+            ph as usize,
+        )
+    } else {
+        render_game_preview(game, pw, ph)
+    };
     let ox = area.x + (area.w.saturating_sub(pw)) / 2;
     let oy = area.y + (area.h.saturating_sub(ph)) / 2;
     blit_rgba(fb, fb_w, fb_h, &px, pw as usize, ph as usize, ox, oy);

@@ -16,6 +16,19 @@ use crate::core::loader::GameImage;
 /// 32 MiB, so the buffer must reach past it.
 pub const GUEST_MEM_SIZE: usize = 0x220_0000; // ~34 MiB
 
+/// A guest framebuffer frame extracted from guest memory (Phase 18).
+#[derive(Debug, Clone)]
+pub struct GuestFrame {
+    /// Framebuffer width in pixels.
+    pub width: u32,
+    /// Framebuffer height in pixels.
+    pub height: u32,
+    /// Frame sequence number written by the guest (0 = never written).
+    pub seq: u32,
+    /// RGBA8 pixels, row-major (`width * height * 4` bytes).
+    pub pixels: Vec<u8>,
+}
+
 /// Result of running a guest image.
 #[derive(Debug)]
 pub struct RunReport {
@@ -27,6 +40,52 @@ pub struct RunReport {
     pub kernel_log: Vec<String>,
     /// Thread count the kernel saw.
     pub threads: usize,
+    /// Last guest framebuffer frame, if the guest wrote one.
+    pub frame: Option<GuestFrame>,
+}
+
+/// Read the guest framebuffer aperture from CPU memory.
+///
+/// Bounds-checked against the flat guest memory **and** the kernel
+/// memory-layer region table — returns `None` when the aperture is
+/// unmapped, malformed, or was never written (`seq == 0`).
+pub fn read_guest_frame(cpu: &Arm64Cpu) -> Option<GuestFrame> {
+    use crate::core::kernel::memory::region_of;
+    let va = kernel::GUEST_FB_BASE;
+    // Memory-layer check: the aperture must live in a mapped,
+    // guest-writable region.
+    let region = region_of(va)?;
+    if !region.permissions.write || region.permissions.supervisor {
+        return None;
+    }
+    // Flat-buffer bounds check.
+    let rel = va.checked_sub(cpu.va_base)? as usize;
+    let header = cpu.memory.get(rel..rel + kernel::GUEST_FB_HEADER)?;
+    let magic = u32::from_le_bytes(header[0..4].try_into().ok()?);
+    if magic != kernel::GUEST_FB_MAGIC {
+        return None;
+    }
+    let width = u32::from_le_bytes(header[4..8].try_into().ok()?);
+    let height = u32::from_le_bytes(header[8..12].try_into().ok()?);
+    let seq = u32::from_le_bytes(header[12..16].try_into().ok()?);
+    if seq == 0 || width == 0 || height == 0 {
+        return None;
+    }
+    // Sanity-cap against the declared aperture (a guest can't claim a
+    // larger frame than the mapped region holds).
+    let want = width as usize * height as usize * 4;
+    if want > kernel::GUEST_FB_SIZE - kernel::GUEST_FB_HEADER {
+        return None;
+    }
+    let px = cpu
+        .memory
+        .get(rel + kernel::GUEST_FB_HEADER..rel + kernel::GUEST_FB_HEADER + want)?;
+    Some(GuestFrame {
+        width,
+        height,
+        seq,
+        pixels: px.to_vec(),
+    })
 }
 
 /// Execute a loaded [`GameImage`] on the interpreter + kernel stub.
@@ -50,12 +109,16 @@ pub fn execute_game(image: &GameImage, max_steps: u64) -> Result<RunReport, Arm6
         })?;
 
     let steps = cpu.run(max_steps)?;
+    // Extract the guest framebuffer before the CPU is dropped — this
+    // is the Phase-18 blit source for the GUI.
+    let frame = read_guest_frame(&cpu);
 
     Ok(RunReport {
         steps,
         output: cpu.output.clone(),
         kernel_log: kern.log.clone(),
         threads: kern.threads.len(),
+        frame,
     })
 }
 
@@ -152,9 +215,51 @@ mod tests {
         // payload → ARM64 interpreter → kernel SVC → console output.
         let img = crate::core::loader::load_game(std::path::Path::new("games/minimal"))
             .expect("load bundled game");
-        let report = execute_game(&img, 10_000).expect("run");
+        let report = execute_game(&img, 200_000).expect("run");
         assert_eq!(report.output, b"Hello, xHoly!\n");
         assert!(report.steps >= 8);
+    }
+
+    #[test]
+    fn bundled_minimal_game_writes_guest_frame() {
+        // Phase 18: the guest writes a two-tone pattern into the FB
+        // aperture; read_guest_frame must return it bounds-checked.
+        let img = crate::core::loader::load_game(std::path::Path::new("games/minimal"))
+            .expect("load bundled game");
+        let report = execute_game(&img, 200_000).expect("run");
+        let frame = report.frame.expect("guest frame present");
+        assert_eq!(frame.width, kernel::GUEST_FB_W);
+        assert_eq!(frame.height, kernel::GUEST_FB_H);
+        assert_eq!(frame.seq, 1);
+        assert_eq!(
+            frame.pixels.len(),
+            (frame.width * frame.height * 4) as usize
+        );
+        // Top half = "x" color (200,40,40), bottom half = "y" cyan.
+        let top = &frame.pixels[0..4];
+        let bottom = &frame.pixels[(frame.pixels.len() - 4)..];
+        assert_eq!(top, &[200, 40, 40, 255]);
+        assert_eq!(bottom, &[30, 226, 226, 255]);
+    }
+
+    #[test]
+    fn guest_frame_empty_without_guest_write() {
+        // A program that never touches the FB aperture yields no frame.
+        let mut bytes = Vec::new();
+        for w in [0xD2800000u32 | (7 << 5), 0xD4000001, 0xD4200000] {
+            bytes.extend_from_slice(&w.to_le_bytes());
+        }
+        let img = GameImage {
+            title: "t".into(),
+            title_id: None,
+            load_base: crate::core::kernel::USER_BASE,
+            entry: crate::core::kernel::USER_BASE,
+            image: bytes,
+            source: PathBuf::from("mem"),
+            metadata: Default::default(),
+        };
+        let report = execute_game(&img, 100).expect("run");
+        assert!(report.frame.is_none());
     }
 
     #[test]

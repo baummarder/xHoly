@@ -320,14 +320,15 @@ mod tests {
         assert_eq!(img.load_base, USER_BASE);
         assert_eq!(img.entry, USER_BASE);
         // Payload only — the XEX2 header (0x1A0 bytes) is stripped.
-        assert_eq!(img.image.len(), 56);
-        assert_eq!(&img.image[0..4], &[0x00, 0x00, 0x80, 0xD2]); // MOVZ x0,#0
+        assert_eq!(img.image.len(), 172);
+        // First instruction: MOVZ x19, #0 (FB base setup).
+        assert_eq!(&img.image[0..4], &[0x13, 0x00, 0x80, 0xD2]);
     }
 
     #[test]
     fn loads_bundled_minimal_xex_file() {
         let img = load_game(Path::new("games/minimal/default.xex")).unwrap();
-        assert_eq!(img.image.len(), 56);
+        assert_eq!(img.image.len(), 172);
         assert_eq!(img.entry, USER_BASE);
         // Title id quad from the XEX header is picked up.
         assert!(img.title_id.is_some());

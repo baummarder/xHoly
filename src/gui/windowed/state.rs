@@ -1,5 +1,6 @@
 //! Windowed GUI state — Phase 5.
 
+use crate::core::execution::GuestFrame;
 use crate::gui::{GameListItem, GuiTheme};
 use std::time::SystemTime;
 
@@ -61,6 +62,12 @@ pub struct WindowedGuiState {
     pub mouse: (u32, u32),
     /// Left mouse button held.
     pub mouse_down: bool,
+    /// Last guest framebuffer frame blitted into the preview (Phase 18).
+    /// Held across frames when the guest FB aperture stays empty.
+    pub guest_frame: Option<GuestFrame>,
+    /// Console output captured from game launches (loader/kernel/game
+    /// stdout lines, newest last, capped at 200).
+    pub console_log: Vec<String>,
 }
 
 impl Default for WindowedGuiState {
@@ -88,6 +95,8 @@ impl Default for WindowedGuiState {
             fullscreen: false,
             mouse: (0, 0),
             mouse_down: false,
+            guest_frame: None,
+            console_log: Vec::new(),
         }
     }
 }

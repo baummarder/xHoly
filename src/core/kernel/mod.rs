@@ -49,6 +49,27 @@ pub const CONSOLE_BASE: u64 = 0x0000_F000_0000_0000;
 pub const CONSOLE_SIZE: u64 = 0x1000;
 
 // ---------------------------------------------------------------------------
+// Guest framebuffer (Phase 18)
+// ---------------------------------------------------------------------------
+
+/// Guest framebuffer aperture inside the user VA window. Layout:
+/// `[u32 magic][u32 width][u32 height][u32 seq]` header followed by
+/// `width * height * 4` RGBA8 pixels. The guest writes frames with
+/// plain STR instructions; the host blits them into the GUI.
+pub const GUEST_FB_MAGIC: u32 = 0x5342_4658; // "XFBS" little-endian
+/// Guest framebuffer base VA (USER_BASE + 8 MiB — above the loaded
+/// image, below the heap arena).
+pub const GUEST_FB_BASE: u64 = 0x8000_0180_0000;
+/// Guest framebuffer size.
+pub const GUEST_FB_W: u32 = 160;
+pub const GUEST_FB_H: u32 = 120;
+/// Header size in bytes.
+pub const GUEST_FB_HEADER: usize = 16;
+/// Total aperture size (header + pixels).
+pub const GUEST_FB_SIZE: usize =
+    GUEST_FB_HEADER + (GUEST_FB_W as usize) * (GUEST_FB_H as usize) * 4;
+
+// ---------------------------------------------------------------------------
 // Syscall numbers — Phase-10 table (x0 = number, x1–x7 = args)
 // ---------------------------------------------------------------------------
 
