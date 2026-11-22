@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">xHoly app icon</title>
+  <desc id="desc">xHoly app icon: a stylized X formed by two intersecting crucifix-style crosses inside a sphere ring, gold glowing border on a dark rounded-square background.</desc>
+
+  <defs>
+    <!-- Soft gold glow used behind the border ring -->
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <radialGradient id="sheen" cx="50%" cy="38%" r="75%">
+      <stop offset="0%" stop-color="#2a2a2a"/>
+      <stop offset="100%" stop-color="#1a1a1a"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded-square dark background with subtle top sheen -->
+  <rect width="512" height="512" rx="116" fill="url(#sheen)"/>
+
+  <!-- Xbox-style sphere ring -->
+  <circle cx="256" cy="256" r="188" fill="none" stroke="#FFD700" stroke-width="10" opacity="0.9"/>
+
+  <!--
+    The X: two diagonal crucifix-crosses. Each cross = thick vertical beam
+    with a short horizontal serif near its top, rotated +/-45deg so the
+    beams cross at the center and the serifs point outward like a crown.
+  -->
+  <g transform="translate(256 256)">
+    <g transform="rotate(-45)">
+      <rect x="-30" y="-160" width="60" height="320" rx="16" fill="#FFD700"/>
+      <rect x="-92" y="-150" width="184" height="32" rx="14" fill="#FFD700"/>
+    </g>
+    <g transform="rotate(45)">
+      <rect x="-30" y="-160" width="60" height="320" rx="16" fill="#FFD700"/>
+      <rect x="-92" y="-150" width="184" height="32" rx="14" fill="#FFD700"/>
+    </g>
+  </g>
+
+  <!-- Center node where the crosses merge -->
+  <circle cx="256" cy="256" r="30" fill="#1a1a1a"/>
+  <circle cx="256" cy="256" r="30" fill="none" stroke="#FFD700" stroke-width="9"/>
+  <circle cx="256" cy="256" r="9" fill="#FFD700"/>
+
+  <!-- Gold frame with glow (app-icon border) -->
+  <rect x="14" y="14" width="484" height="484" rx="102" fill="none"
+        stroke="#FFD700" stroke-width="10" opacity="0.95" filter="url(#glow)"/>
+  <rect x="14" y="14" width="484" height="484" rx="102" fill="none"
+        stroke="#FFD700" stroke-width="5"/>
+</svg>

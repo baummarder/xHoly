@@ -26,6 +26,9 @@ env_logger = "0.11"
 clap = { version = "4", features = ["derive"] }
 notify = "8"
 pollster = "0.4"
+ratatui = "0.29"
+crossterm = "0.28"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 winit = "0.30"

@@ -1,6 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use xholy::config::Config;
+use xholy::gui::{GuiBackend, GuiConfig};
 use xholy::optical::{detect_drives, game_scanner, VirtualDrive};
 use xholy::Emulator;
 
@@ -26,6 +27,20 @@ struct Args {
     #[arg(long)]
     drives: bool,
 
+    /// Launch the GUI (ratatui TUI; falls back automatically if the
+    /// terminal can't do raw mode). Equivalent to --headless with UI.
+    #[arg(long)]
+    gui: bool,
+
+    /// Run without any UI (explicit headless mode; this is the default
+    /// when a game image is supplied without --gui).
+    #[arg(long)]
+    headless: bool,
+
+    /// Use the wgpu preview backend inside the GUI where available.
+    #[arg(long)]
+    wgpu_gui: bool,
+
     /// Maximum number of frames to run (default: unlimited)
     #[arg(long)]
     max_frames: Option<u64>,
@@ -38,6 +53,19 @@ struct Args {
 fn main() {
     env_logger::init();
     let args = Args::parse();
+
+    if args.gui {
+        let mut gui_config = GuiConfig::default();
+        if args.wgpu_gui {
+            gui_config.backend = GuiBackend::Wgpu;
+        }
+        if let Err(e) = xholy::gui::run(gui_config) {
+            eprintln!("xHoly: GUI failed: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    let _ = args.headless; // explicit flag; headless is the default path
 
     if args.drives {
         let drives = detect_drives();

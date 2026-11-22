@@ -8,6 +8,7 @@ pub mod audio;
 pub mod config;
 pub mod core;
 pub mod gpu;
+pub mod gui;
 pub mod io;
 pub mod optical;
 pub mod runtime;
