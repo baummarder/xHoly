@@ -60,8 +60,10 @@ pub fn composite(state: &WindowedGuiState, width: u32, height: u32) -> (Framebuf
     let mut layout = UiLayout::default();
 
     let toolbar_h = 34u32;
-    let sidebar_w = 230u32;
-    let info_w = 190u32;
+    // Adaptive panel widths: never exceed ~30% of the framebuffer each,
+    // so tiny windows/headless test sizes still lay out correctly.
+    let sidebar_w = 230u32.min(w as u32 / 4).max(80);
+    let info_w = 190u32.min(w as u32 / 4).max(80);
 
     // Toolbar
     fill_rect(&mut fb, w as u32, 0, 0, w as u32, toolbar_h, PANEL);
@@ -108,7 +110,124 @@ pub fn composite(state: &WindowedGuiState, width: u32, height: u32) -> (Framebuf
     };
     render_preview_area(&mut fb, w as u32, h as u32, state, &layout.preview);
 
+    // Fallback-renderer warning banner (under the toolbar).
+    if !state.software_message.is_empty() {
+        let banner_h = 18u32;
+        fill_rect(
+            &mut fb,
+            w as u32,
+            0,
+            toolbar_h,
+            w as u32,
+            banner_h,
+            [0x4A, 0x1A, 0x1A, 0xFF],
+        );
+        draw_text(
+            &mut fb,
+            w as u32,
+            h as u32,
+            12,
+            toolbar_h + 5,
+            &truncate(&state.software_message.to_uppercase(), 90),
+            [0xFF, 0xB0, 0xB0, 0xFF],
+            1,
+        );
+    }
+
+    // Settings overlay (toggled with O).
+    if state.settings_open {
+        render_settings_panel(&mut fb, w as u32, h as u32, state);
+    }
+
     (fb, layout)
+}
+
+/// Centered settings panel: resolution, FPS limit, vsync, fullscreen,
+/// theme, GPU API. Read-only display — values come from CLI/config.
+fn render_settings_panel(fb: &mut Framebuffer, fb_w: u32, fb_h: u32, state: &WindowedGuiState) {
+    let pw = 340u32;
+    let ph = 220u32;
+    let px = fb_w.saturating_sub(pw) / 2;
+    let py = fb_h.saturating_sub(ph) / 2;
+
+    // Dim the background.
+    for y in 0..fb_h {
+        for x in 0..fb_w {
+            let i = (y as usize * fb_w as usize + x as usize) * 4;
+            fb[i] = fb[i].saturating_mul(2) / 3;
+            fb[i + 1] = fb[i + 1].saturating_mul(2) / 3;
+            fb[i + 2] = fb[i + 2].saturating_mul(2) / 3;
+        }
+    }
+
+    fill_rect(fb, fb_w, px, py, pw, ph, PANEL);
+    stroke_rect(fb, fb_w, px, py, pw, ph, GOLD);
+    draw_text(fb, fb_w, fb_h, px + 14, py + 10, "SETTINGS", GOLD, 2);
+
+    let mut y = py + 40;
+    let rows: [(String, String); 7] = [
+        (
+            "RESOLUTION".into(),
+            format!("{}X{}", state.resolution.0, state.resolution.1),
+        ),
+        (
+            "FPS LIMIT".into(),
+            state
+                .fps_limit
+                .map(|f| f.to_string())
+                .unwrap_or_else(|| "UNLIMITED".into()),
+        ),
+        (
+            "VSYNC".into(),
+            if state.vsync {
+                "ON".into()
+            } else {
+                "OFF".into()
+            },
+        ),
+        (
+            "FULLSCREEN".into(),
+            if state.fullscreen {
+                "ON".into()
+            } else {
+                "OFF".into()
+            },
+        ),
+        ("THEME".into(), format!("{:?}", state.theme).to_uppercase()),
+        ("GPU API".into(), state.gpu_label.to_uppercase()),
+        (
+            "SOFTWARE".into(),
+            if state.software_mode {
+                "YES".into()
+            } else {
+                "NO".into()
+            },
+        ),
+    ];
+    for (label, value) in rows {
+        draw_text(fb, fb_w, fb_h, px + 14, y, &label, GRAY, 1);
+        draw_text(
+            fb,
+            fb_w,
+            fb_h,
+            (px + pw).saturating_sub(14 + text_width(&value, 1)),
+            y,
+            &value,
+            GOLD,
+            1,
+        );
+        y += 20;
+    }
+    draw_text(
+        fb,
+        fb_w,
+        fb_h,
+        px + 14,
+        y + 6,
+        "PRESS O TO CLOSE",
+        DIM_GOLD,
+        1,
+    );
 }
 
 fn render_toolbar(
@@ -290,7 +409,7 @@ fn render_info_panel(
             fb,
             fb_w,
             fb_h,
-            x + w - 12 - text_width(&value, 1),
+            (x + w).saturating_sub(12 + text_width(&value, 1)),
             y,
             &value,
             GOLD,

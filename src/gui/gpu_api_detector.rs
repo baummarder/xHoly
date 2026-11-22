@@ -6,44 +6,9 @@
 //! `~/.config/xholy/gpu_config.toml` and overridden via CLI
 //! (`--gpu-api`) or [`GuiConfig::gpu_api`].
 
+pub use super::config::{GpuApi, GpuApiPreference};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-
-/// Detected/selected GPU API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum GpuApi {
-    /// Vulkan (includes MoltenVK on macOS via wgpu).
-    Vulkan,
-    /// OpenGL 4.x / GLES (wgpu GL backend or ANGLE).
-    OpenGL,
-    /// No hardware API — CPU/software rendering only.
-    Software,
-}
-
-/// User preference: auto-detect or force an API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GpuApiPreference {
-    /// Probe and pick the best available API (default).
-    #[default]
-    Auto,
-    Vulkan,
-    OpenGL,
-    Software,
-}
-
-impl GpuApiPreference {
-    /// Parse a CLI/config string.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
-            "auto" => Some(Self::Auto),
-            "vulkan" => Some(Self::Vulkan),
-            "opengl" | "gl" => Some(Self::OpenGL),
-            "software" | "sw" | "cpu" => Some(Self::Software),
-            _ => None,
-        }
-    }
-}
 
 /// Result of a successful probe.
 #[derive(Debug, Clone)]

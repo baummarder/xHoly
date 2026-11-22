@@ -45,6 +45,18 @@ pub struct WindowedGuiState {
     pub theme: GuiTheme,
     /// Detected GPU API description for the info panel (e.g. "Vulkan · RTX 4070").
     pub gpu_label: String,
+    /// Whether the software (CPU) renderer is active.
+    pub software_mode: bool,
+    /// Warning message shown when on a fallback renderer.
+    pub software_message: String,
+    /// Settings panel visibility.
+    pub settings_open: bool,
+    /// Configured FPS limit (mirrored for the settings panel).
+    pub fps_limit: Option<u32>,
+    /// Configured vsync flag.
+    pub vsync: bool,
+    /// Configured fullscreen flag.
+    pub fullscreen: bool,
     /// Mouse position in framebuffer pixels.
     pub mouse: (u32, u32),
     /// Left mouse button held.
@@ -68,6 +80,12 @@ impl Default for WindowedGuiState {
             preview_size: (320, 180),
             theme: GuiTheme::Dark,
             gpu_label: String::new(),
+            software_mode: false,
+            software_message: String::new(),
+            settings_open: false,
+            fps_limit: None,
+            vsync: true,
+            fullscreen: false,
             mouse: (0, 0),
             mouse_down: false,
         }

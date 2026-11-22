@@ -53,6 +53,9 @@ impl WindowApp {
         });
         let state = WindowedGuiState {
             games: scan_games_windowed(),
+            fps_limit: config.fps_limit,
+            vsync: config.vsync,
+            fullscreen: config.fullscreen,
             ..Default::default()
         };
         Self {
@@ -120,6 +123,7 @@ impl WindowApp {
                 GuiAction::NextGame => self.state.select_next(),
                 GuiAction::PrevGame => self.state.select_prev(),
                 GuiAction::ToggleFullscreen => self.toggle_fullscreen(),
+                GuiAction::ToggleSettings => self.state.settings_open = !self.state.settings_open,
                 GuiAction::Quit => self.should_exit = true,
             }
         }
@@ -342,6 +346,12 @@ pub fn run_windowed(config: GuiConfig, pref: GpuApiPreference) -> Result<(), Str
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut app = WindowApp::new(config, backends, detection.api);
     app.state.gpu_label = detection.describe();
+    app.state.software_mode = detection.api == GpuApi::Software;
+    app.state.software_message = if detection.api == GpuApi::Software {
+        "Running on software renderer — performance may be lower".into()
+    } else {
+        String::new()
+    };
     event_loop
         .run_app(&mut app)
         .map_err(|e| format!("event loop: {e}"))?;
@@ -369,6 +379,12 @@ pub fn run_headless(
     let mut app = WindowApp::new_headless(config, detection.api);
     app.state.resolution = (w, h);
     app.state.gpu_label = detection.describe();
+    app.state.software_mode = detection.api == GpuApi::Software;
+    app.state.software_message = if detection.api == GpuApi::Software {
+        "Running on software renderer — performance may be lower".into()
+    } else {
+        String::new()
+    };
 
     // Software path: no GPU at all.
     if detection.api == GpuApi::Software {

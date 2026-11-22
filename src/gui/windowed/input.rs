@@ -26,6 +26,8 @@ pub enum GuiAction {
     PrevGame,
     /// Toggle fullscreen.
     ToggleFullscreen,
+    /// Toggle the settings panel.
+    ToggleSettings,
     /// Quit the app.
     Quit,
 }
@@ -69,6 +71,7 @@ impl InputState {
             Key::Named(winit::keyboard::NamedKey::F5) => Some(GuiAction::SaveState),
             Key::Named(winit::keyboard::NamedKey::F9) => Some(GuiAction::LoadState),
             Key::Named(winit::keyboard::NamedKey::F11) => Some(GuiAction::ToggleFullscreen),
+            Key::Character(s) if s.eq_ignore_ascii_case("o") => Some(GuiAction::ToggleSettings),
             _ => None,
         };
         if let Some(a) = action {

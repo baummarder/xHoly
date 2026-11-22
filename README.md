@@ -119,11 +119,20 @@ xholy --gui                 # windowed GUI (winit + wgpu, auto GPU API)
 xholy --gui-tui             # terminal UI (ratatui)
 xholy --gui-headless        # offscreen render loop (no window)
 xholy --gpu-api vulkan      # force Vulkan (auto|vulkan|opengl|software)
+xholy --fps-limit 120       # cap GUI framerate (0 = unlimited)
+xholy --resolution 1280x720 # window size
+xholy --fullscreen          # start fullscreen
+xholy --theme gold          # dark | gold | light
 ```
 
 The GUI auto-detects the GPU API (Vulkan → OpenGL → Software) and
 persists the result to `~/.config/xholy/gpu_config.toml`. See
 `docs/gpu-api-support.md` for per-vendor API recommendations.
+
+**Troubleshooting:** if the windowed GUI fails with "no GPU API
+available", use `--gpu-software` (CPU renderer, works anywhere) or
+`--gui-tui` (terminal UI). Press `O` in the windowed GUI for the
+settings panel.
 
 ### Running
 

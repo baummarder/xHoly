@@ -1,8 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 use xholy::config::Config;
-use xholy::gui::gpu_api_detector::GpuApiPreference;
-use xholy::gui::GuiConfig;
+use xholy::gui::{GpuApiPreference, GuiConfig, GuiTheme};
 use xholy::optical::{detect_drives, game_scanner, VirtualDrive};
 use xholy::Emulator;
 
@@ -82,6 +81,22 @@ struct Args {
     #[arg(long, hide = true)]
     gui_software: bool,
 
+    /// FPS limit for the GUI (0 = unlimited).
+    #[arg(long, value_name = "N")]
+    fps_limit: Option<u32>,
+
+    /// GUI window resolution WIDTHxHEIGHT (e.g. --resolution 1280x720).
+    #[arg(long, value_name = "WxH")]
+    resolution: Option<String>,
+
+    /// Start the GUI in fullscreen.
+    #[arg(long)]
+    fullscreen: bool,
+
+    /// GUI theme: dark | gold | light.
+    #[arg(long, value_name = "THEME")]
+    theme: Option<String>,
+
     /// Run without any UI (explicit headless mode; this is the default
     /// when a game image is supplied without --gui).
     #[arg(long)]
@@ -94,6 +109,12 @@ struct Args {
     /// Config file path (default: ~/.config/xholy/config.toml)
     #[arg(long)]
     config: Option<PathBuf>,
+}
+
+/// Parse "WxH" (e.g. "1280x720", "1920X1080") into (w, h).
+fn parse_resolution(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 fn main() {
@@ -128,7 +149,29 @@ fn main() {
     let gui_headless = args.gui_headless || args.gui_headless_wgpu;
 
     if gui_mode || tui_mode || gui_headless {
-        let mut gui_config = GuiConfig::default();
+        let mut gui_config = GuiConfig {
+            preferred_api: gpu_pref,
+            ..Default::default()
+        };
+        if let Some(f) = args.fps_limit {
+            gui_config.fps_limit = (f > 0).then_some(f);
+        }
+        if let Some(res) = &args.resolution {
+            if let Some((w, h)) = parse_resolution(res) {
+                gui_config.window_size = (w, h);
+            } else {
+                eprintln!("xHoly: warning: bad --resolution '{res}', expected WxH");
+            }
+        }
+        if args.fullscreen {
+            gui_config.fullscreen = true;
+        }
+        if let Some(t) = &args.theme {
+            match GuiTheme::parse(t) {
+                Some(theme) => gui_config.theme = theme,
+                None => eprintln!("xHoly: warning: bad --theme '{t}', expected dark|gold|light"),
+            }
+        }
         if gui_headless {
             gui_config.headless = true;
             let frames = args.max_frames.unwrap_or(300) as u32;
