@@ -5,3 +5,4 @@
 !.keep
 node_modules/
 .DS_Store
+cpp/window_manager/build/
