@@ -11,8 +11,10 @@ use crate::core::kernel::{self, Kernel};
 use crate::core::loader::GameImage;
 
 /// Guest physical memory size covering kernel + user regions.
-/// `USER_BASE - KERNEL_BASE` = 16 MiB; add slack for stack/heap.
-pub const GUEST_MEM_SIZE: usize = 0x120_0000; // ~18 MiB
+/// `USER_BASE - KERNEL_BASE` = 16 MiB; the kernel heap arena
+/// ([`HEAP_BASE`](crate::core::kernel::HEAP_BASE)) sits at offset
+/// 32 MiB, so the buffer must reach past it.
+pub const GUEST_MEM_SIZE: usize = 0x220_0000; // ~34 MiB
 
 /// Result of running a guest image.
 #[derive(Debug)]
@@ -139,6 +141,17 @@ mod tests {
             source: PathBuf::from("mem"),
             metadata: Default::default(),
         };
+        let report = execute_game(&img, 10_000).expect("run");
+        assert_eq!(report.output, b"Hello, xHoly!\n");
+        assert!(report.steps >= 8);
+    }
+
+    #[test]
+    fn bundled_minimal_game_runs_from_disk() {
+        // The real loader path: games/minimal/default.xex (XEX2) →
+        // payload → ARM64 interpreter → kernel SVC → console output.
+        let img = crate::core::loader::load_game(std::path::Path::new("games/minimal"))
+            .expect("load bundled game");
         let report = execute_game(&img, 10_000).expect("run");
         assert_eq!(report.output, b"Hello, xHoly!\n");
         assert!(report.steps >= 8);

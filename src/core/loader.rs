@@ -105,39 +105,10 @@ impl GameImage {
 // XEX-lite header parsing
 // ---------------------------------------------------------------------------
 
-/// Parse a minimal `XEX2` header: magic + module flags + header size +
-/// timestamp. Real XEX has ~20 optional headers (kernel imports, TLS,
-/// sections); we extract the load address and entry point fields that
-/// appear at fixed offsets in retail headers.
-///
-/// Layout (offsets from file start):
-/// ```text
-/// 0x00  magic "XEX2"
-/// 0x04  module_flags u32
-/// 0x08  header_size u32   (usually 0x178)
-/// 0x0C  reserved u32
-/// 0x10  timestamp u32
-/// ...
-/// 0x104 entry_point u32   (guest VA, low 32 bits)
-/// 0x108 image_base u32    (guest VA)
-/// ```
-fn parse_xex_header(data: &[u8]) -> Result<(u64, u64), LoadError> {
-    if data.len() < 0x110 {
-        return Err(LoadError::BadXex(PathBuf::new()));
-    }
-    if &data[0..4] != b"XEX2" {
-        return Err(LoadError::BadXex(PathBuf::new()));
-    }
-    let header_size = u32::from_le_bytes(data[0x08..0x0C].try_into().unwrap()) as usize;
-    if header_size < 0x110 || header_size > data.len() {
-        return Err(LoadError::BadXex(PathBuf::new()));
-    }
-    // Entry point & image base live in the header area.
-    let entry = u32::from_le_bytes(data[0x104..0x108].try_into().unwrap()) as u64;
-    let image_base = u32::from_le_bytes(data[0x108..0x10C].try_into().unwrap()) as u64;
-    // XEX VAs are typically 0x82xxxxxx (guest VA); our flat memory uses
-    // offsets — map VA → offset by subtracting image_base if nonzero.
-    Ok((image_base, entry))
+/// Parse a minimal `XEX2` header — delegates to the structured
+/// [`xex_parser`] (fixed fields + section layout + import stub).
+fn parse_xex_header(data: &[u8], source: &Path) -> Result<xex_parser::XexHeader, LoadError> {
+    xex_parser::parse_xex(data, source)
 }
 
 // ---------------------------------------------------------------------------
@@ -198,12 +169,16 @@ fn load_game_dir(dir: &Path) -> Result<GameImage, LoadError> {
     if let Ok(rd) = fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.extension().map(|x| x == "xex").unwrap_or(false) && !candidates.contains(&p) {
+            let recognized = p
+                .extension()
+                .map(|x| x == "xex" || x == "exe" || x == "xbe")
+                .unwrap_or(false);
+            if recognized && !candidates.contains(&p) {
                 candidates.push(p);
             }
         }
     }
-    for ext in ["bin", "img", "xbe"] {
+    for ext in ["bin", "img"] {
         let p = dir.join(format!("default.{ext}"));
         if p.is_file() {
             candidates.push(p);
@@ -217,14 +192,21 @@ fn load_game_dir(dir: &Path) -> Result<GameImage, LoadError> {
     let data = fs::read(&exe)?;
     let mut img = load_image_bytes(&exe, &data)?;
 
-    // Merge xboxconfig metadata.
+    // Merge xboxconfig metadata — an explicit <Name> wins over the
+    // executable's file stem.
     let cfg = dir.join("xboxconfig.xml");
     if cfg.is_file() {
         if let Ok(meta) = parse_xboxconfig(&cfg) {
-            if img.title.is_empty() {
+            if let Some(name) = &meta.name {
+                img.title = name.clone();
+            } else if img.title.is_empty() {
                 img.title = meta.name.clone().unwrap_or_else(|| img.title.clone());
             }
-            img.title_id = meta.title_id.clone();
+            // xboxconfig <TitleID> is authoritative over the raw
+            // XEX header quad.
+            if meta.title_id.is_some() {
+                img.title_id = meta.title_id.clone();
+            }
             img.metadata = meta;
         }
     }
@@ -237,31 +219,29 @@ fn load_game_dir(dir: &Path) -> Result<GameImage, LoadError> {
     Ok(img)
 }
 
-fn load_image_bytes(path: &Path, data: &[u8]) -> Result<GameImage, LoadError> {
+/// Build a [`GameImage`] from raw file bytes (shared by the file and
+/// directory paths; also usable by the ISO runner).
+pub fn image_from_bytes(path: &Path, data: &[u8]) -> Result<GameImage, LoadError> {
     if data.len() < 4 {
         return Err(LoadError::Unrecognized(path.to_path_buf()));
     }
-    let (load_base, entry_offset) = if &data[0..4] == b"XEX2" {
-        let (image_base, entry) = parse_xex_header(data)?;
-        // XEX stores a VA; our flat memory is offset-based. If the VA
-        // looks like a real Xbox VA (0x82xxxxxx), map to USER_BASE.
-        let base = if image_base >= 0x8000_0000 {
-            USER_BASE
-        } else {
-            image_base.max(USER_BASE)
-        };
-        (base, entry)
+    let mut title_id = None;
+    let (load_base, entry, image) = if &data[0..4] == b"XEX2" {
+        let hdr = parse_xex_header(data, path)?;
+        // XEX layout: header_size bytes of header, then the image
+        // payload. Only the payload is mapped into guest memory.
+        let hs = hdr.header_size as usize;
+        if hs > data.len() {
+            return Err(LoadError::BadXex(path.to_path_buf()));
+        }
+        // XEX VAs (0x82xxxxxx) map onto our USER_BASE window; the entry
+        // point is stored as an RVA-style offset from image_base.
+        let base = USER_BASE;
+        let rva = hdr.entry_point.saturating_sub(hdr.image_base) as u64;
+        title_id = xex_parser::format_title_id(&hdr.title_id);
+        (base, base + rva, data[hs..].to_vec())
     } else {
-        (USER_BASE, USER_BASE)
-    };
-
-    // For XEX the code doesn't start at file offset 0 — sections live
-    // after the header. As a scaffold we load the whole file; a real
-    // loader would walk the section table.
-    let entry = if entry_offset >= load_base {
-        entry_offset
-    } else {
-        load_base + entry_offset
+        (USER_BASE, USER_BASE, data.to_vec())
     };
 
     Ok(GameImage {
@@ -269,13 +249,17 @@ fn load_image_bytes(path: &Path, data: &[u8]) -> Result<GameImage, LoadError> {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "<untitled>".into()),
-        title_id: None,
+        title_id,
         load_base,
         entry,
-        image: data.to_vec(),
+        image,
         source: path.to_path_buf(),
         metadata: GameMetadata::default(),
     })
+}
+
+fn load_image_bytes(path: &Path, data: &[u8]) -> Result<GameImage, LoadError> {
+    image_from_bytes(path, data)
 }
 
 #[cfg(test)]
@@ -325,6 +309,28 @@ mod tests {
         fs::write(&bin, b"").unwrap();
         assert!(matches!(load_game(&bin), Err(LoadError::Unrecognized(_))));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loads_bundled_minimal_game_dir() {
+        // games/minimal ships a real XEX2 + xboxconfig.xml fixture.
+        let img = load_game(Path::new("games/minimal")).unwrap();
+        assert_eq!(img.title, "xHoly Minimal Guest");
+        assert_eq!(img.title_id.as_deref(), Some("XHOLYMINIMAL01"));
+        assert_eq!(img.load_base, USER_BASE);
+        assert_eq!(img.entry, USER_BASE);
+        // Payload only — the XEX2 header (0x1A0 bytes) is stripped.
+        assert_eq!(img.image.len(), 56);
+        assert_eq!(&img.image[0..4], &[0x00, 0x00, 0x80, 0xD2]); // MOVZ x0,#0
+    }
+
+    #[test]
+    fn loads_bundled_minimal_xex_file() {
+        let img = load_game(Path::new("games/minimal/default.xex")).unwrap();
+        assert_eq!(img.image.len(), 56);
+        assert_eq!(img.entry, USER_BASE);
+        // Title id quad from the XEX header is picked up.
+        assert!(img.title_id.is_some());
     }
 
     #[test]

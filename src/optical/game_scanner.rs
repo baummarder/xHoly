@@ -106,11 +106,22 @@ fn scan_for_configs(
         return Ok(());
     }
     let entries = fs.list_dir(dir)?;
+    // An .xex "config" is only a title-id carrier on retail discs; when
+    // a real XML manifest sits next to it, the XML wins and we skip
+    // the duplicate entry.
+    let has_xml_config = entries.iter().any(|e| {
+        !e.is_dir
+            && (e.name.eq_ignore_ascii_case("xboxconfig.xml")
+                || e.name.eq_ignore_ascii_case("gameconfig.xml"))
+    });
     for entry in &entries {
         let child = join(dir, &entry.name);
         if entry.is_dir {
             scan_for_configs(fs, &child, depth + 1, games)?;
-        } else if is_config_name(&entry.name) && is_xml_or_xex(&entry.name) {
+        } else if is_config_name(&entry.name)
+            && is_xml_or_xex(&entry.name)
+            && !(has_xml_config && entry.name.to_ascii_lowercase().ends_with(".xex"))
+        {
             if let Ok(bytes) = fs.read_file(&child) {
                 let text = String::from_utf8_lossy(&bytes);
                 let payload = parent_dir(&child);

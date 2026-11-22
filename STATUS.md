@@ -115,6 +115,27 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   disp32; SIMD is integer-lane only (no packed FP, no byte/word
   lanes); `wasmtime` not integrated — the interpreter executes the
   emitted subset.
+- [x] **Phase 17 minimal guest game + real load path** — bundled
+  `games/minimal/` fixture (`default.xex` XEX2 header + AArch64
+  payload + `xboxconfig.xml`, regenerable via
+  `cargo run --example gen_minimal_game`). `--game games/minimal`
+  loads the XEX through the real path (loader → payload after
+  `header_size` → `USER_BASE` → entry RVA → ARM64 interpreter →
+  kernel SVC) and prints `Hello, xHoly!`; the TUI library lists it
+  and Enter launches it into the on-screen console log.
+  `xex_parser` gained section layout (`XexSection`) and an import
+  resolver stub (`resolve_imports` → deterministic thunk VAs in the
+  kernel region); `kernel::xam` is the matching XAM export stub
+  table. The kernel gained a **pre-emptive scheduler tick**: the CPU
+  calls back every `preempt_budget` instructions and the kernel
+  rotates thread contexts mid-stream (in addition to cooperative
+  SYS_YIELD). `GUEST_MEM_SIZE` now covers the heap arena so
+  HeapAlloc writes land in mapped memory.
+  **Honest limits:** the XEX reader handles only our minimal
+  contiguous-payload layout — no retail section table, compression,
+  encryption, or real import directory; XAM stubs return plausible
+  constants, not console services; pre-emption is a budget tick on a
+  single CPU, not SMP.
 - [x] **Phase 12 rendering additions** — `src/gui/windowed/
   frame_buffer.rs` (fused color+depth `FrameBuffer`, Load/Clear pass
   API, dark-Xbox clear color) and DXBC-style texture containers in
@@ -137,7 +158,9 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   load/store pairs, sysregs, and a real XEX section/import parser.
   `--game` runs *small* ARM64 programs (hello-world works end-to-end).
 - [ ] Kernel syscalls are xHoly-assigned numbers, not the real Xbox
-  XAM/loader ABI; scheduler is cooperative snapshots, not preemptive.
+  XAM ABI — `kernel::xam` stubs resolved imports but nothing services
+  real XAM calls. Scheduler is pre-emptive by instruction budget but
+  still single-CPU cooperative underneath.
 - [ ] No *native* JIT — the x86-64→WASM JIT exists (`src/jit/`) but
   executes in a Rust WASM interpreter, not machine code; a
   dynasm-style JIT remains future work. The guest CPU loop still runs
@@ -150,7 +173,9 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   game frames
 - [ ] Save states / load states are UI stubs (slot list only)
 - [ ] Cheats are a toggle flag, no cheat engine
-- [ ] Launch/play buttons log to stderr; nothing boots
+- [ ] TUI Launch (Enter) runs the real game path and shows console
+  output; the windowed wgpu GUI has no launch action yet and the
+  guest still can't drive rendered frames (Phase 18 GPU leaf pending)
 - [ ] Audio output is a driver abstraction with no real stream
 - [ ] Controller/HID input not wired to the GUI
 - [ ] The Rust GUI and the C++ window manager are **not integrated** —

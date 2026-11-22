@@ -19,7 +19,6 @@ use super::game_image::{AssetCatalog, AssetEntry, DiscInfo, GameRegion, ParsedGa
 use super::iso_parser::IsoGameSource;
 use super::{load_game, GameImage};
 use crate::core::execution::{execute_game, RunReport};
-use crate::core::kernel::USER_BASE;
 use crate::core::shader::{compile_shader, GameShaderCache};
 
 /// Errors from the runner pipeline.
@@ -101,15 +100,10 @@ pub fn run_iso(iso_path: &Path, max_steps: u64) -> Result<RunOutcome, RunError> 
         .ok_or_else(|| RunError::NoExecutable(iso_path.display().to_string()))?;
 
     let bytes = src.read_file(&exec.iso_path)?;
-    let game_image = GameImage {
-        title: src.volume_label.clone(),
-        title_id: None,
-        load_base: USER_BASE,
-        entry: USER_BASE,
-        image: bytes,
-        source: PathBuf::from(&exec.iso_path),
-        metadata: Default::default(),
-    };
+    // Route through the real loader so XEX headers, entry RVAs and
+    // title ids are handled identically to the directory/file path.
+    let iso_path_buf = PathBuf::from(&exec.iso_path);
+    let game_image = super::image_from_bytes(&iso_path_buf, &bytes)?;
 
     // Asset catalog from the disc scan.
     let mut assets = AssetCatalog::default();
@@ -137,9 +131,9 @@ pub fn run_iso(iso_path: &Path, max_steps: u64) -> Result<RunOutcome, RunError> 
             has_executable: true,
         }],
         assets,
-        entry_point: USER_BASE,
-        image_base: USER_BASE,
-        title_id: None,
+        entry_point: game_image.entry,
+        image_base: game_image.load_base,
+        title_id: game_image.title_id.clone(),
         release_date: None,
     };
 

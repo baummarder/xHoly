@@ -82,6 +82,9 @@ pub struct SvcCall {
 /// Kernel callback: inspect/mutate CPU state for a syscall.
 /// Return `false` to halt the CPU.
 pub type SvcHandler = dyn FnMut(&mut Arm64Cpu, &SvcCall) -> bool;
+/// Pre-emption hook — invoked every `preempt_interval` retired
+/// instructions so the kernel can pre-empt the running thread.
+pub type PreemptHandler = dyn FnMut(&mut Arm64Cpu) -> bool;
 
 // ---------------------------------------------------------------------------
 // CPU state
@@ -118,6 +121,10 @@ pub struct Arm64Cpu {
     pub running: bool,
     /// SVC sink — installed by the kernel stub.
     pub svc_handler: Option<Box<SvcHandler>>,
+    /// Pre-emption hook — installed by the kernel stub (Phase 17).
+    pub preempt_handler: Option<Box<PreemptHandler>>,
+    /// Retired instructions between pre-emption checks.
+    pub preempt_interval: u64,
     /// Console MMIO base (writes here append to `output`).
     pub console_base: u64,
     /// Console aperture size.
@@ -141,7 +148,9 @@ impl Arm64Cpu {
             steps: 0,
             running: true,
             svc_handler: None,
-            console_base: u64::MAX, // disabled until kernel maps it
+            preempt_handler: None,
+            preempt_interval: u64::MAX, // disabled until kernel installs it
+            console_base: u64::MAX,     // disabled until kernel maps it
             console_size: 0,
         }
     }
@@ -664,9 +673,23 @@ impl Arm64Cpu {
     }
 
     /// Run until halt / error / `max_steps`. Returns steps executed.
+    ///
+    /// Every [`Self::preempt_interval`] retired instructions the
+    /// installed [`Self::preempt_handler`] runs, giving the kernel a
+    /// chance to switch threads mid-stream (pre-emptive scheduling).
     pub fn run(&mut self, max_steps: u64) -> Result<u64, Arm64Error> {
+        let mut since_preempt = 0u64;
         while self.running && self.steps < max_steps {
             self.step()?;
+            since_preempt += 1;
+            if since_preempt >= self.preempt_interval {
+                since_preempt = 0;
+                let mut handler = self.preempt_handler.take();
+                if let Some(h) = handler.as_mut() {
+                    h(self);
+                }
+                self.preempt_handler = handler;
+            }
         }
         Ok(self.steps)
     }

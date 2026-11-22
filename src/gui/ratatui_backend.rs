@@ -132,8 +132,9 @@ pub fn run(config: GuiConfig) -> io::Result<()> {
                         scroll = scroll.saturating_sub(1);
                     }
                     KeyCode::Enter => {
-                        if let Some(g) = state.selected() {
-                            println!("xHoly: launching {} ({})", g.title, g.path.display());
+                        let path = state.selected().map(|g| g.path.clone());
+                        if let Some(p) = path {
+                            launch_game(&mut state, &p);
                         }
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -178,14 +179,71 @@ fn scan_games() -> Vec<GameListItem> {
             continue;
         };
         // Group multi-disc titles so the disc count is accurate.
+        // Resolve payload paths against the host source so Launch can
+        // hand a real filesystem path to the game runner: directories
+        // map to `root/<payload>`, ISO files map to the ISO itself
+        // (run_path dispatches to run_iso for those).
+        let host_is_dir = path.is_dir();
         for group in game_scanner::group_multidisc(&games) {
             let discs = group.len().min(u8::MAX as usize) as u8;
             for g in group {
-                items.push(GameListItem::from_scanned(g, discs));
+                let mut item = GameListItem::from_scanned(g, discs);
+                item.path = if host_is_dir {
+                    if g.payload_path.is_empty() {
+                        path.clone()
+                    } else {
+                        path.join(&g.payload_path)
+                    }
+                } else {
+                    path.clone()
+                };
+                items.push(item);
             }
         }
     }
     items
+}
+
+/// Launch the selected game through the real loader→kernel→ARM64
+/// interpreter path and capture its console output into the GUI log.
+/// Bounded step budget keeps the TUI responsive on the scaffold.
+fn launch_game(state: &mut GuiState, path: &std::path::Path) {
+    state.running = true;
+    push_log(state, &format!("xHoly: launching {}", path.display()));
+    match crate::core::loader::game_runner::run_path(path, 500_000) {
+        Ok(outcome) => {
+            let text = String::from_utf8_lossy(&outcome.report.output);
+            for line in text.lines() {
+                push_log(state, line);
+            }
+            for line in &outcome.report.kernel_log {
+                push_log(state, &format!("kernel: {line}"));
+            }
+            for (shader, warnings) in &outcome.shader_results {
+                for w in warnings {
+                    push_log(state, &format!("shader {shader}: {w}"));
+                }
+            }
+            push_log(
+                state,
+                &format!(
+                    "xHoly: guest exited after {} steps ({} threads)",
+                    outcome.report.steps, outcome.report.threads
+                ),
+            );
+        }
+        Err(e) => push_log(state, &format!("xHoly: launch failed: {e}")),
+    }
+    state.running = false;
+}
+
+/// Append a line to the console log, keeping the last 200 entries.
+fn push_log(state: &mut GuiState, line: &str) {
+    state.console_log.push(line.to_string());
+    if state.console_log.len() > 200 {
+        let excess = state.console_log.len() - 200;
+        state.console_log.drain(..excess);
+    }
 }
 
 fn screenshot(state: &GuiState) {
@@ -377,6 +435,20 @@ fn draw_detail(f: &mut Frame, state: &GuiState, area: Rect, config: &GuiConfig) 
             Style::default().fg(Color::DarkGray),
         )),
     ];
+    let mut lines = lines;
+    if !state.console_log.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Console ",
+            gold().add_modifier(Modifier::BOLD),
+        )));
+        for l in state.console_log.iter().rev().take(12).rev() {
+            lines.push(Line::from(Span::styled(
+                format!("  {l}"),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+    }
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
     let _ = config;
 }

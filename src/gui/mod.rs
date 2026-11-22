@@ -105,6 +105,9 @@ pub struct GuiState {
     pub cheat_engine_enabled: bool,
     /// Active tab for multi-game view.
     pub active_tab: usize,
+    /// Console output captured from the last launched game
+    /// (loader/kernel/game stdout lines, newest last, capped).
+    pub console_log: Vec<String>,
 }
 
 impl Default for GuiState {
@@ -120,6 +123,7 @@ impl Default for GuiState {
             save_slots: 10,
             cheat_engine_enabled: false,
             active_tab: 0,
+            console_log: Vec::new(),
         }
     }
 }

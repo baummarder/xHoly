@@ -25,6 +25,7 @@ pub mod memory;
 pub mod mmio;
 pub mod scheduler;
 pub mod syscall;
+pub mod xam;
 
 pub use console::KernelConsole;
 pub use interrupt::Gic;
@@ -34,6 +35,7 @@ pub use scheduler::{
     round_robin, Thread, THREAD_DEAD, THREAD_READY, THREAD_SLEEPING, THREAD_SUSPENDED,
 };
 pub use syscall::{KernelObjects, HEAP_ARENA_SIZE, HEAP_BASE};
+pub use xam::{import_stub_va, XamImport, XamTable, IMPORT_STUB_BASE};
 
 use crate::core::cpu::interpreter::{Arm64Cpu, SvcCall};
 
@@ -113,6 +115,12 @@ pub struct Kernel {
     pub gic: Gic,
     /// MMIO region registry.
     pub mmio: MmioSpace,
+    /// XAM import table (Phase 17 stub).
+    pub xam: XamTable,
+    /// Guest memory regions currently mapped (Phase 17 memory layer).
+    pub regions: Vec<memory::MemoryRegion>,
+    /// Instruction budget per thread before a pre-emptive reschedule.
+    pub preempt_budget: u64,
 }
 
 impl Kernel {
@@ -128,7 +136,55 @@ impl Kernel {
             console: KernelConsole::default(),
             gic: Gic::new(),
             mmio: MmioSpace::with_defaults(),
+            xam: XamTable::new(),
+            regions: memory::layout(),
+            preempt_budget: 1024,
         }
+    }
+
+    /// Register XEX imports resolved by the loader into the XAM table.
+    pub fn register_imports<I>(&mut self, imports: I)
+    where
+        I: IntoIterator<Item = (String, String, u64)>,
+    {
+        for (library, name, thunk_va) in imports {
+            self.xam.register(&library, &name, thunk_va);
+            self.log
+                .push(format!("xam: import {library}!{name} -> {thunk_va:#x}"));
+        }
+    }
+
+    /// Pre-emptive scheduling tick: called by the CPU every
+    /// [`Self::preempt_budget`] instructions. Saves the current thread
+    /// context, rotates to the next ready thread and restores it.
+    /// Returns `true` when a different thread is now running.
+    ///
+    /// This is the Phase-17 pre-emptive scheduler: unlike the
+    /// cooperative yield (SYS_YIELD), the CPU can be interrupted
+    /// mid-instruction-stream by the kernel tick.
+    pub fn preempt_tick(&mut self, cpu: &mut Arm64Cpu) -> bool {
+        if self.threads.len() <= 1 {
+            return false;
+        }
+        let cur = self.current;
+        if self.threads[cur].state != THREAD_READY {
+            return false;
+        }
+        // Snapshot outgoing context.
+        self.threads[cur] = Thread::from_cpu(self.threads[cur].id, cpu);
+        self.threads[cur].state = THREAD_READY;
+        // Pick next runnable thread (skip self unless nothing else).
+        let next = scheduler::next_ready(&self.threads, cur);
+        if next == cur {
+            // No other runnable thread: restore the snapshot anyway
+            // (context is identical, but keeps the invariant simple).
+            self.threads[cur].restore(cpu);
+            return false;
+        }
+        self.threads[next].restore(cpu);
+        self.current = next;
+        self.ticks += 1;
+        true
     }
 
     /// Install this kernel as the CPU's SVC handler.
@@ -142,6 +198,16 @@ impl Kernel {
         }));
         cpu.console_base = CONSOLE_BASE;
         cpu.console_size = CONSOLE_SIZE;
+        // Pre-emptive scheduling: the CPU calls back every
+        // `preempt_budget` instructions; the kernel rotates threads.
+        cpu.preempt_interval = self.preempt_budget.max(1);
+        let kernel_ptr = self as *mut Kernel;
+        cpu.preempt_handler = Some(Box::new(move |cpu| {
+            // SAFETY: same single-threaded scaffold invariant as the
+            // SVC handler above — kernel_ptr outlives the CPU handler.
+            let kernel = unsafe { &mut *kernel_ptr };
+            kernel.preempt_tick(cpu)
+        }));
     }
 
     /// Dispatch one syscall. Returns `false` to halt the CPU (SYS_EXIT).
@@ -317,6 +383,19 @@ mod tests {
         kernel.handle_syscall(&mut cpu, &call);
         assert_eq!(kernel.threads[0].state, THREAD_SLEEPING);
         assert_eq!(kernel.threads[0].sleep_ticks, 5);
+    }
+
+    #[test]
+    fn preempt_tick_switches_ready_threads() {
+        let mut cpu = Arm64Cpu::new(64 * 1024);
+        let mut kernel = Kernel::new(&cpu);
+        kernel.threads.push(Thread::from_cpu(1, &cpu));
+        kernel.current = 0;
+        assert!(kernel.preempt_tick(&mut cpu));
+        assert_eq!(kernel.current, 1);
+        // Single-threaded kernels never pre-empt.
+        let mut solo = Kernel::new(&cpu);
+        assert!(!solo.preempt_tick(&mut cpu));
     }
 
     #[test]

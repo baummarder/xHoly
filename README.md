@@ -133,8 +133,31 @@ xholy --bloom               # bloom post-FX (default on; --no-bloom off)
 xholy --tone-mapping aces   # linear | reinhard | filmic | aces
 xholy --aa fxaa             # off | fxaa | msaa4
 xholy --game game.bin       # run ARM64 guest image headless (Phase 8)
+xholy --game games/minimal  # bundled minimal guest (XEX2 + xboxconfig)
 xholy --native-wm           # native C++ WM demo window (Windows)
 ```
+
+#### Minimal guest game (Phase 17)
+
+`games/minimal/` is a real on-disk guest image: `default.xex` carries a
+little-endian `XEX2` header (entry RVA, image base, title-id quad) followed
+by an AArch64 payload that writes `Hello, xHoly!` through the kernel's
+SYS_WRITE and exits via SYS_EXIT; `xboxconfig.xml` supplies the title and
+TitleID. The loader strips the header, maps the payload at `USER_BASE`,
+and the ARM64 interpreter runs it end-to-end:
+
+```sh
+xholy --game games/minimal          # prints "Hello, xHoly!"
+xholy --game games/minimal/default.xex   # same, direct XEX file
+xholy --mount games --list          # lists "xHoly Minimal Guest"
+xholy --gui-tui                     # Enter on the game launches it;
+                                    # output lands in the Console pane
+```
+
+Regenerate the fixture with `cargo run --example gen_minimal_game`.
+The XEX reader handles only this contiguous-payload layout — retail
+section tables, compression, encryption and real import directories are
+not implemented (see STATUS.md).
 
 ### Framerate
 
