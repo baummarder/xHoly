@@ -105,7 +105,7 @@ impl Default for GuiConfig {
             window_title: "xHoly — Xbox Emulator".into(),
             window_size: (1920, 1080),
             high_dpi: true,
-            fps_limit: Some(60),
+            fps_limit: Some(120),
             software_rendering: false,
             show_fps: true,
             show_cpu_usage: true,

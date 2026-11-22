@@ -78,13 +78,19 @@ impl WindowApp {
 
     /// Process one composited frame through the renderer.
     /// Returns Ok(()) on success.
+    ///
+    /// Honors `config.fps_limit` (default 60): after presenting, sleeps
+    /// for the remainder of the frame budget so the loop holds a steady
+    /// ≥60 FPS cadence instead of spinning uncapped.
     pub fn render_frame(&mut self) -> Result<(), String> {
+        let frame_start = Instant::now();
         let (w, h) = self.state.resolution;
         let (fb, _layout) = ui::composite(&self.state, w, h);
         if let Some(r) = self.renderer.as_mut() {
             r.render_frame(&fb, w, h)?;
         }
         self.tick_fps();
+        pace_frame(self.config.fps_limit, frame_start);
         Ok(())
     }
 
@@ -397,6 +403,20 @@ pub fn run_headless(
         pace(app.config.fps_limit);
     }
     Ok(last_fb)
+}
+
+/// Frame pacing: sleep until `frame_start + 1/fps` has elapsed.
+/// `fps_limit` of `None` means uncapped; values < 1 are ignored.
+fn pace_frame(fps_limit: Option<u32>, frame_start: Instant) {
+    let Some(limit) = fps_limit else { return };
+    if limit == 0 {
+        return;
+    }
+    let budget = Duration::from_secs_f32(1.0 / limit as f32);
+    let elapsed = frame_start.elapsed();
+    if elapsed < budget {
+        std::thread::sleep(budget - elapsed);
+    }
 }
 
 /// Rough frame pacing for the headless loop.
