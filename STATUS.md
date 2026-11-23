@@ -66,11 +66,24 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   (sidebar, toolbar, preview, info + settings panels), mouse
   hit-testing, all hotkeys (ESC/F1/F5/F9/E/C/Q/F11/O)
 - [x] Headless render mode (`--gui-headless`) for CI/tests
-- [x] GPU API auto-detection: Vulkan → OpenGL → Software, persisted to
+- [x] GPU API auto-detection (Phase 21): platform order — Windows →
+  D3D12, Linux → Vulkan, macOS → Metal — then wgpu's other backends and
+  Software as fallbacks; persisted to
   `~/.config/xholy/gpu_config.toml`; live-detected Vulkan/RTX on dev
   machine (`docs/gpu-api-support.md`)
 - [x] Frame pacing (`FramePacer`): VSync-aware present-mode selection,
   FPS cap, min/max/avg stats (`docs/framerate-fix.md`)
+- [x] **Phase 21 platform GPU decision** (`src/gui/gpu_api_detector.rs`,
+  `src/gui/native_gpu_backend.rs`) — `GpuPlatform` (Windows/Linux/macOS)
+  → primary `GpuApi` (D3D12/Vulkan/Metal) with a deterministic fallback
+  chain ending in Software; `PlatformBackend` / `NativeGpuBackend` map
+  the native API to wgpu's matching backend bits (DX12/VULKAN/METAL)
+  and can create a backend-restricted `wgpu::Instance`. CLI/config
+  accept `d3d12`/`dx12`, `vulkan`, `metal`, `opengl`, `software`. The
+  decision is tested for all three platforms.
+  **Honest limits:** no native D3D12/Metal device or command-queue
+  layer is linked — the "native" backends are wgpu backend bits, and
+  the windowed renderer still composites guest frames on the CPU.
 - [x] Config: `--fps-limit`, `--resolution`, `--fullscreen`,
   `--theme`, `--gpu-api`, `--frame-pacing`, `--no-vsync`
 
@@ -275,3 +288,19 @@ reinen Entscheidungstests abhandeln. Ehrliche Grenze: der dekodierte
 PowerPC-PE wird nicht interpretiert und die SHA1-Blöcke werden nicht
 verifiziert — Retail-Titel booten weiterhin nicht; es schließt nur die
 Decoder-Lücke.
+
+## Empfhlung (OpenCode, 2026-11-23) — GPU-Architektur
+
+Phase 21 trifft die Plattformentscheidung (Windows→D3D12, Linux→Vulkan,
+macOS→Metal) und führt wgpu-Software-Fallbacks als geordnete Kette ein;
+die Entscheidung ist plattformunabhängig getestet. Ich habe sie nach der
+Dekodierung gemacht, damit die GPU-Wahl auf einem echten Image-Pfad
+aufbaut. Begründung: Eine native D3D12/Metal-Geräteschicht wäre ein
+viel größeres FFI-Projekt und würde am aktuellen CPU-Compositing nichts
+ändern — die wgpu-Backend-Bits liefern dieselbe Entscheidung mit
+prüfbarem Verhalten und klaren Grenzen. Als Nächstes würde ich den
+Guest-Frame endlich als wgpu-Texture hochladen statt ihn in den UI-
+Framebuffer zu blitten; das ist der sichtbare Gewinn, den die
+Plattformentscheidung vorbereitet. Ehrliche Grenze: Retail-Titel booten
+weiterhin nicht (NEON, Bitmask-Immediates, LDP/STP, Sysregs fehlen) —
+es schließt nur die GPU-Entscheidungslücke.

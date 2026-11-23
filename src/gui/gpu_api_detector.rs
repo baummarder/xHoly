@@ -33,18 +33,120 @@ impl GpuDetection {
 
     fn api_name(&self) -> &'static str {
         match self.api {
+            GpuApi::D3D12 => "Direct3D 12",
             GpuApi::Vulkan => "Vulkan",
+            GpuApi::Metal => "Metal",
             GpuApi::OpenGL => "OpenGL",
             GpuApi::Software => "Software",
         }
     }
 }
 
+/// Operating system with a distinct primary GPU API (Phase 21).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuPlatform {
+    /// Direct3D 12 is the primary API.
+    Windows,
+    /// Vulkan is the primary API.
+    Linux,
+    /// Metal is the primary API.
+    MacOS,
+}
+
+impl GpuPlatform {
+    /// Short label for logs/config.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Linux => "linux",
+            Self::MacOS => "macos",
+        }
+    }
+}
+
+/// The platform this binary was compiled for.
+pub fn host_platform() -> GpuPlatform {
+    #[cfg(target_os = "windows")]
+    {
+        GpuPlatform::Windows
+    }
+    #[cfg(target_os = "macos")]
+    {
+        GpuPlatform::MacOS
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        GpuPlatform::Linux
+    }
+}
+
+/// Primary GPU API for a platform: Windows → D3D12, Linux → Vulkan,
+/// macOS → Metal.
+pub fn preferred_api(platform: GpuPlatform) -> GpuApi {
+    match platform {
+        GpuPlatform::Windows => GpuApi::D3D12,
+        GpuPlatform::Linux => GpuApi::Vulkan,
+        GpuPlatform::MacOS => GpuApi::Metal,
+    }
+}
+
+/// Probe order for a platform. The primary API comes first; wgpu's
+/// other hardware backends follow before the software floor.
+pub fn fallback_order(platform: GpuPlatform) -> &'static [GpuApi] {
+    match platform {
+        GpuPlatform::Windows => &[
+            GpuApi::D3D12,
+            GpuApi::Vulkan,
+            GpuApi::OpenGL,
+            GpuApi::Software,
+        ],
+        GpuPlatform::Linux => &[GpuApi::Vulkan, GpuApi::OpenGL, GpuApi::Software],
+        GpuPlatform::MacOS => &[
+            GpuApi::Metal,
+            GpuApi::Vulkan, // MoltenVK via wgpu
+            GpuApi::OpenGL,
+            GpuApi::Software,
+        ],
+    }
+}
+
+/// Resolved native backend for a platform (Phase 21).
+///
+/// This scaffold does not link a native D3D12/Metal device layer; the
+/// native API is represented by wgpu's corresponding backend bit. The
+/// decision (which API wins on which OS) is nevertheless real and
+/// platform-independent testable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlatformBackend {
+    /// Primary native API.
+    pub api: GpuApi,
+    /// wgpu backend bits implementing `api` here.
+    pub wgpu_backends: wgpu::Backends,
+    /// Human-readable backend label.
+    pub label: &'static str,
+}
+
+/// Pick the primary backend for `platform`.
+pub fn select_platform_backend(platform: GpuPlatform) -> PlatformBackend {
+    let api = preferred_api(platform);
+    PlatformBackend {
+        api,
+        wgpu_backends: backends_for(api),
+        label: match api {
+            GpuApi::D3D12 => "d3d12 (wgpu)",
+            GpuApi::Vulkan => "vulkan (wgpu)",
+            GpuApi::Metal => "metal (wgpu)",
+            GpuApi::OpenGL => "opengl (wgpu)",
+            GpuApi::Software => "software",
+        },
+    }
+}
+
 /// Detect the best available GPU API.
 ///
-/// Order: Vulkan → OpenGL → Software. Each probe creates a wgpu
-/// instance restricted to that backend and requests an adapter with no
-/// surface (works headless).
+/// Auto mode uses [`fallback_order`] for [`host_platform`]; each probe
+/// creates a wgpu instance restricted to one backend and requests an
+/// adapter with no surface (works headless).
 pub fn detect_gpu_api() -> GpuDetection {
     detect_with_preference(GpuApiPreference::Auto)
 }
@@ -52,6 +154,8 @@ pub fn detect_gpu_api() -> GpuDetection {
 /// Detect honoring a user preference (Auto probes; others force).
 pub fn detect_with_preference(pref: GpuApiPreference) -> GpuDetection {
     match pref {
+        GpuApiPreference::D3D12 => probe_single(GpuApi::D3D12, wgpu::Backends::DX12, true),
+        GpuApiPreference::Metal => probe_single(GpuApi::Metal, wgpu::Backends::METAL, true),
         GpuApiPreference::Vulkan => probe_single(GpuApi::Vulkan, wgpu::Backends::VULKAN, true),
         GpuApiPreference::OpenGL => probe_single(GpuApi::OpenGL, wgpu::Backends::GL, true),
         GpuApiPreference::Software => GpuDetection {
@@ -62,11 +166,11 @@ pub fn detect_with_preference(pref: GpuApiPreference) -> GpuDetection {
             forced: true,
         },
         GpuApiPreference::Auto => {
-            for (api, backends) in [
-                (GpuApi::Vulkan, wgpu::Backends::VULKAN),
-                (GpuApi::OpenGL, wgpu::Backends::GL),
-            ] {
-                let d = probe_single(api, backends, false);
+            for &api in fallback_order(host_platform()) {
+                if api == GpuApi::Software {
+                    break;
+                }
+                let d = probe_single(api, backends_for(api), false);
                 if d.api == api && !d.adapter_name.is_empty() {
                     return d;
                 }
@@ -117,7 +221,9 @@ fn probe_single(api: GpuApi, backends: wgpu::Backends, forced: bool) -> GpuDetec
 /// Map a detected API to wgpu backend flags for instance creation.
 pub fn backends_for(api: GpuApi) -> wgpu::Backends {
     match api {
+        GpuApi::D3D12 => wgpu::Backends::DX12,
         GpuApi::Vulkan => wgpu::Backends::VULKAN,
+        GpuApi::Metal => wgpu::Backends::METAL,
         GpuApi::OpenGL => wgpu::Backends::GL,
         // Software has no GPU backend; caller should use the CPU path.
         GpuApi::Software => wgpu::Backends::empty(),
@@ -166,7 +272,9 @@ pub fn load_preference() -> GpuApiPreference {
 pub fn save_detection(d: &GpuDetection) {
     let cfg = GpuConfigFile {
         api: match d.api {
+            GpuApi::D3D12 => "d3d12",
             GpuApi::Vulkan => "vulkan",
+            GpuApi::Metal => "metal",
             GpuApi::OpenGL => "opengl",
             GpuApi::Software => "software",
         }
@@ -201,6 +309,18 @@ mod tests {
             GpuApiPreference::parse("cpu"),
             Some(GpuApiPreference::Software)
         );
+        assert_eq!(
+            GpuApiPreference::parse("d3d12"),
+            Some(GpuApiPreference::D3D12)
+        );
+        assert_eq!(
+            GpuApiPreference::parse("DX12"),
+            Some(GpuApiPreference::D3D12)
+        );
+        assert_eq!(
+            GpuApiPreference::parse("metal"),
+            Some(GpuApiPreference::Metal)
+        );
         assert_eq!(GpuApiPreference::parse("bogus"), None);
     }
 
@@ -209,7 +329,7 @@ mod tests {
         let d = detect_gpu_api();
         // Must always return something; Software is the floor.
         match d.api {
-            GpuApi::Vulkan | GpuApi::OpenGL | GpuApi::Software => {}
+            GpuApi::D3D12 | GpuApi::Vulkan | GpuApi::Metal | GpuApi::OpenGL | GpuApi::Software => {}
         }
     }
 
@@ -222,8 +342,64 @@ mod tests {
 
     #[test]
     fn backends_mapping() {
+        assert_eq!(backends_for(GpuApi::D3D12), wgpu::Backends::DX12);
         assert_eq!(backends_for(GpuApi::Vulkan), wgpu::Backends::VULKAN);
+        assert_eq!(backends_for(GpuApi::Metal), wgpu::Backends::METAL);
         assert_eq!(backends_for(GpuApi::OpenGL), wgpu::Backends::GL);
         assert_eq!(backends_for(GpuApi::Software), wgpu::Backends::empty());
+    }
+
+    #[test]
+    fn platform_decision_windows_d3d12_linux_vulkan_mac_metal() {
+        assert_eq!(preferred_api(GpuPlatform::Windows), GpuApi::D3D12);
+        assert_eq!(preferred_api(GpuPlatform::Linux), GpuApi::Vulkan);
+        assert_eq!(preferred_api(GpuPlatform::MacOS), GpuApi::Metal);
+    }
+
+    #[test]
+    fn platform_fallback_order_ends_in_software() {
+        assert_eq!(
+            fallback_order(GpuPlatform::Windows),
+            &[
+                GpuApi::D3D12,
+                GpuApi::Vulkan,
+                GpuApi::OpenGL,
+                GpuApi::Software
+            ]
+        );
+        assert_eq!(
+            fallback_order(GpuPlatform::Linux),
+            &[GpuApi::Vulkan, GpuApi::OpenGL, GpuApi::Software]
+        );
+        assert_eq!(
+            fallback_order(GpuPlatform::MacOS).first(),
+            Some(&GpuApi::Metal)
+        );
+        for platform in [GpuPlatform::Windows, GpuPlatform::Linux, GpuPlatform::MacOS] {
+            assert_eq!(fallback_order(platform).last(), Some(&GpuApi::Software));
+        }
+    }
+
+    #[test]
+    fn platform_backend_maps_native_api_to_wgpu() {
+        let win = select_platform_backend(GpuPlatform::Windows);
+        assert_eq!(win.api, GpuApi::D3D12);
+        assert_eq!(win.wgpu_backends, wgpu::Backends::DX12);
+        let linux = select_platform_backend(GpuPlatform::Linux);
+        assert_eq!(linux.api, GpuApi::Vulkan);
+        assert_eq!(linux.wgpu_backends, wgpu::Backends::VULKAN);
+        let mac = select_platform_backend(GpuPlatform::MacOS);
+        assert_eq!(mac.api, GpuApi::Metal);
+        assert_eq!(mac.wgpu_backends, wgpu::Backends::METAL);
+    }
+
+    #[test]
+    fn host_platform_has_a_primary_api() {
+        let platform = host_platform();
+        assert_eq!(
+            preferred_api(platform),
+            select_platform_backend(platform).api
+        );
+        assert!(fallback_order(platform).contains(&preferred_api(platform)));
     }
 }

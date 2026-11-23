@@ -1,7 +1,8 @@
 //! Integration tests for GPU API detection and renderer selection.
 
 use xholy::gui::gpu_api_detector::{
-    backends_for, detect_gpu_api, detect_with_preference, GpuApi, GpuApiPreference,
+    backends_for, detect_gpu_api, detect_with_preference, fallback_order, preferred_api,
+    select_platform_backend, GpuApi, GpuApiPreference, GpuPlatform,
 };
 use xholy::gui::renderer::GuiFrameRenderer;
 use xholy::gui::software_renderer::SoftwareRenderer;
@@ -9,9 +10,9 @@ use xholy::gui::software_renderer::SoftwareRenderer;
 #[test]
 fn auto_detection_returns_valid_api() {
     let d = detect_gpu_api();
-    // Must resolve to one of the three APIs; Software is the floor.
+    // Any native API is valid; Software is the floor.
     match d.api {
-        GpuApi::Vulkan | GpuApi::OpenGL | GpuApi::Software => {}
+        GpuApi::D3D12 | GpuApi::Vulkan | GpuApi::Metal | GpuApi::OpenGL | GpuApi::Software => {}
     }
     // Adapter name is non-empty for hardware APIs, "CPU rasterizer" for SW.
     assert!(!d.adapter_name.is_empty() || d.api == GpuApi::Software);
@@ -29,7 +30,10 @@ fn forced_software_detection() {
 fn preference_parse_all_variants() {
     for (s, expected) in [
         ("auto", GpuApiPreference::Auto),
+        ("d3d12", GpuApiPreference::D3D12),
+        ("dx12", GpuApiPreference::D3D12),
         ("vulkan", GpuApiPreference::Vulkan),
+        ("metal", GpuApiPreference::Metal),
         ("opengl", GpuApiPreference::OpenGL),
         ("gl", GpuApiPreference::OpenGL),
         ("software", GpuApiPreference::Software),
@@ -42,9 +46,36 @@ fn preference_parse_all_variants() {
 
 #[test]
 fn backends_mapping_is_correct() {
+    assert_eq!(backends_for(GpuApi::D3D12), wgpu::Backends::DX12);
     assert_eq!(backends_for(GpuApi::Vulkan), wgpu::Backends::VULKAN);
+    assert_eq!(backends_for(GpuApi::Metal), wgpu::Backends::METAL);
     assert_eq!(backends_for(GpuApi::OpenGL), wgpu::Backends::GL);
     assert!(backends_for(GpuApi::Software).is_empty());
+}
+
+#[test]
+fn platform_gpu_api_decision() {
+    assert_eq!(preferred_api(GpuPlatform::Windows), GpuApi::D3D12);
+    assert_eq!(preferred_api(GpuPlatform::Linux), GpuApi::Vulkan);
+    assert_eq!(preferred_api(GpuPlatform::MacOS), GpuApi::Metal);
+
+    assert_eq!(fallback_order(GpuPlatform::Windows)[0], GpuApi::D3D12);
+    assert_eq!(fallback_order(GpuPlatform::Linux)[0], GpuApi::Vulkan);
+    assert_eq!(fallback_order(GpuPlatform::MacOS)[0], GpuApi::Metal);
+
+    // The native API is backed by wgpu's matching backend bit here.
+    assert_eq!(
+        select_platform_backend(GpuPlatform::Windows).wgpu_backends,
+        wgpu::Backends::DX12
+    );
+    assert_eq!(
+        select_platform_backend(GpuPlatform::Linux).wgpu_backends,
+        wgpu::Backends::VULKAN
+    );
+    assert_eq!(
+        select_platform_backend(GpuPlatform::MacOS).wgpu_backends,
+        wgpu::Backends::METAL
+    );
 }
 
 #[test]

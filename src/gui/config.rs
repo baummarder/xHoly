@@ -12,8 +12,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GpuApi {
-    /// Vulkan (includes MoltenVK on macOS via wgpu).
+    /// Direct3D 12 (Windows primary; wgpu DX12 backend in this scaffold).
+    D3D12,
+    /// Vulkan (Linux primary; MoltenVK on macOS via wgpu).
     Vulkan,
+    /// Metal (macOS primary; wgpu Metal backend in this scaffold).
+    Metal,
     /// OpenGL 4.x / GLES (wgpu GL backend or ANGLE).
     OpenGL,
     /// No hardware API — CPU/software rendering only.
@@ -24,7 +28,9 @@ impl GpuApi {
     /// CLI-friendly name.
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::D3D12 => "d3d12",
             Self::Vulkan => "vulkan",
+            Self::Metal => "metal",
             Self::OpenGL => "opengl",
             Self::Software => "software",
         }
@@ -38,7 +44,9 @@ pub enum GpuApiPreference {
     /// Probe and pick the best available API (default).
     #[default]
     Auto,
+    D3D12,
     Vulkan,
+    Metal,
     OpenGL,
     Software,
 }
@@ -48,7 +56,9 @@ impl GpuApiPreference {
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "auto" => Some(Self::Auto),
+            "d3d12" | "dx12" | "direct3d12" => Some(Self::D3D12),
             "vulkan" => Some(Self::Vulkan),
+            "metal" => Some(Self::Metal),
             "opengl" | "gl" => Some(Self::OpenGL),
             "software" | "sw" | "cpu" => Some(Self::Software),
             _ => None,
@@ -60,7 +70,9 @@ impl GpuApiPreference {
     pub fn resolve(self, detected: GpuApi) -> GpuApi {
         match self {
             Self::Auto => detected,
+            Self::D3D12 => GpuApi::D3D12,
             Self::Vulkan => GpuApi::Vulkan,
+            Self::Metal => GpuApi::Metal,
             Self::OpenGL => GpuApi::OpenGL,
             Self::Software => GpuApi::Software,
         }
@@ -149,7 +161,8 @@ pub struct GuiConfig {
     pub headless: bool,
     /// Color theme.
     pub theme: GuiTheme,
-    /// Preferred GPU API (`Auto` = probe Vulkan → OpenGL → Software).
+    /// Preferred GPU API (`Auto` = platform order: D3D12 on Windows,
+    /// Vulkan on Linux, Metal on macOS, then wgpu/software fallbacks).
     pub preferred_api: GpuApiPreference,
     /// Post-processing configuration (Phase 9): bloom, tone mapping,
     /// anti-aliasing. Ignored by the software renderer.

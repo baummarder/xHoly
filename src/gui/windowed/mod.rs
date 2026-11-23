@@ -17,6 +17,7 @@ pub mod ui;
 pub mod window;
 
 use crate::gui::gpu_api_detector::{self, GpuApi, GpuApiPreference};
+use crate::gui::native_gpu_backend::NativeGpuBackend;
 use crate::gui::renderer::GuiFrameRenderer;
 use crate::gui::{FramePacer, GameListItem, GuiConfig};
 use input::{GuiAction, InputState};
@@ -384,15 +385,17 @@ impl WindowApp {
 
 /// Run the windowed GUI (blocks until the window closes).
 ///
-/// `pref` selects the GPU API: `Auto` probes Vulkan → OpenGL →
-/// Software; explicit values force that backend.
+/// `pref` selects the GPU API: `Auto` probes the platform order
+/// (Windows: D3D12, Linux: Vulkan, macOS: Metal) with wgpu/software
+/// fallbacks; explicit values force that backend.
 pub fn run_windowed(config: GuiConfig, pref: GpuApiPreference) -> Result<(), String> {
     let detection = gpu_api_detector::detect_with_preference(pref);
     gpu_api_detector::save_detection(&detection);
     eprintln!(
-        "xHoly: GPU API = {} ({})",
+        "xHoly: GPU API = {} ({}) [native: {}]",
         detection.describe(),
-        detection.backend
+        detection.backend,
+        NativeGpuBackend::for_host().label()
     );
 
     // Software has no presentable backend — try GL once more for the
@@ -437,9 +440,10 @@ pub fn run_headless(
 ) -> Result<Vec<u8>, String> {
     let detection = gpu_api_detector::detect_with_preference(pref);
     eprintln!(
-        "xHoly: GPU API = {} ({})",
+        "xHoly: GPU API = {} ({}) [native: {}]",
         detection.describe(),
-        detection.backend
+        detection.backend,
+        NativeGpuBackend::for_host().label()
     );
     let (w, h) = config.window_size;
     let mut app = WindowApp::new_headless(config, detection.api);
