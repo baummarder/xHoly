@@ -152,6 +152,25 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   timeslice across GUI frames yet); 160×120 fixed guest FB; the
   windowed GUI still has no guest→GPU draw submission — the guest
   frame is CPU-composited like the rest of the UI.
+- [x] **Phase 19 real XEX section layout** (`src/core/loader/xex_parser.rs`) —
+  real XEX2 files are no longer ignored: `parse_xex` decodes the
+  **big-endian** 0x18-byte fixed header (`security_offset`,
+  `header_count`) and the optional-header `(key, value)` directory with
+  Xenia-compatible key IDs. Entry point / image base come from the
+  directory (`XEX_HEADER_ENTRY_POINT`, `..._IMAGE_BASE_ADDRESS`), title
+  id and media id from execution info, image size from the security
+  block. `XexHeader::sections()` now reconstructs `.text` / `.data` /
+  `.rdata` from the security page descriptors (RVA = page index × page
+  size, 4 KiB or 64 KiB per `image_flags`), with a contiguous `.text`
+  fallback for xHoly's legacy little-endian fixture. `is_retail_layout()`
+  additionally recognizes a parsed directory. `loader::image_from_bytes`
+  consequently strips the correct (big-endian) header size and resolves
+  the entry RVA from real headers instead of rejecting them.
+  **Honest limits:** no AES decryption, no basic/normal LZX
+  decompression, no embedded PowerPC PE section table, no real import
+  directory; `raw_offset` is an uncompressed-layout estimate, and the
+  guest CPU still cannot execute PowerPC/FX code. Retail titles do not
+  boot — this closes only the loader/header gap.
 - [x] **Phase 12 rendering additions** — `src/gui/windowed/
   frame_buffer.rs` (fused color+depth `FrameBuffer`, Load/Clear pass
   API, dark-Xbox clear color) and DXBC-style texture containers in
@@ -171,8 +190,10 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 
 - [ ] **No retail game runs** — the ARM64 interpreter covers a useful
   subset but real titles need NEON/SIMD, bitmask immediates,
-  load/store pairs, sysregs, and a real XEX section/import parser.
-  `--game` runs *small* ARM64 programs (hello-world works end-to-end).
+  load/store pairs, sysregs, image decryption/decompression and a real
+  import parser. Phase 19 added real XEX2 header/section parsing; the
+  embedded PE and imports remain stubbed. `--game` runs *small* ARM64
+  programs (hello-world works end-to-end).
 - [ ] Kernel syscalls are xHoly-assigned numbers, not the real Xbox
   XAM ABI — `kernel::xam` stubs resolved imports but nothing services
   real XAM calls. Scheduler is pre-emptive by instruction budget but
@@ -208,3 +229,19 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 framerate integration tests). C++ side:
 `cpp/window_manager` builds with MSVC + CMake/Ninja; its test binary
 creates real HWNDs and passes on a desktop session.
+
+## Empfhlung (OpenCode, 2026-11-23)
+
+Phase 19 macht Retail-XEX2-Header sichtbar, aber weiterhin nicht
+ausführbar. Als nächster Schritt würde ich die **Image-Dekodierung**
+(File-Format-Info: `XEX_ENCRYPTION_NORMAL` + `XEX_COMPRESSION_BASIC`)
+angehen, nicht NEON oder Pre-emption: Sie baut direkt auf dem neuen
+Security-Block/Page-Descriptor-Layout auf, ist mit synthetischen
+Fixtures deterministisch testbar und schließt die Lücke zwischen
+„Header gelesen" und „Image im Guest-Speicher". Begründung: ohne
+dekomprimiertes Bild bleibt jede weitere CPU-Arbeit wirkungslos;
+NEON/SIMD setzt ein lauffähiges Image voraus, und Pre-emption
+(Timer/IRQ + SMP) sowie ein Guest→GPU-Draw-Pfad sind architektonisch
+größer bzw. kosmetisch, solange das Guest-Frame schon im Preview
+ankommt. Ehrliche Grenze: auch danach booten keine Retail-Titel —
+der PowerPC-Befehlssatz fehlt weiterhin.

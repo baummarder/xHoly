@@ -4,16 +4,17 @@
 //!
 //! - **Flat images** (`.bin`, `.img`, `.xex` payloads we can map):
 //!   raw bytes loaded at [`USER_BASE`](crate::core::kernel::USER_BASE).
-//! - **XEX headers**: the `XEX2` header is parsed for the load address
-//!   and entry point when present (real XEX layout is more complex —
-//!   see limitations).
+//! - **XEX headers**: the `XEX2` header is parsed for load address,
+//!   entry point and (Phase 19) the optional-header directory plus the
+//!   security block's section layout. Both real big-endian XEX2 and
+//!   xHoly's minimal little-endian fixture are recognized.
 //! - **Game directories**: scans for `default.xex`/`*.xex` plus
 //!   `xboxconfig.xml` metadata (title, title id, path).
 //!
-//! This is a *loader scaffold*: it produces a [`GameImage`] the kernel
-//! + interpreter can execute. It does not implement the real Xbox
-//!
-//! executable format (XEX sections, imports, TLS, etc.).
+//! This is still a *loader scaffold*: it produces a [`GameImage`] the
+//! kernel + interpreter can execute. It does not decrypt or decompress
+//! the image, parse the embedded PowerPC PE or service the real import
+//! directory — see `xex_parser` and STATUS.md for honest limits.
 
 pub mod game_image;
 pub mod game_runner;
@@ -105,8 +106,10 @@ impl GameImage {
 // XEX-lite header parsing
 // ---------------------------------------------------------------------------
 
-/// Parse a minimal `XEX2` header — delegates to the structured
-/// [`xex_parser`] (fixed fields + section layout + import stub).
+/// Parse an `XEX2` header — delegates to the structured
+/// [`xex_parser`] (fixed fields, optional-header directory, section
+/// layout and import stub). Both the real big-endian layout and the
+/// minimal scaffold fixture are supported.
 fn parse_xex_header(data: &[u8], source: &Path) -> Result<xex_parser::XexHeader, LoadError> {
     xex_parser::parse_xex(data, source)
 }
@@ -332,6 +335,31 @@ mod tests {
         assert_eq!(img.entry, USER_BASE);
         // Title id quad from the XEX header is picked up.
         assert!(img.title_id.is_some());
+    }
+
+    #[test]
+    fn image_from_bytes_reads_real_xex2_directory() {
+        // Phase 19: a real big-endian XEX2 header must not be ignored.
+        // The loader used to byte-swap header_size at 0x08 and reject it.
+        fn put_be32(d: &mut [u8], off: usize, v: u32) {
+            d[off..off + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        let mut data = vec![0u8; 0x80];
+        data[0..4].copy_from_slice(b"XEX2");
+        put_be32(&mut data, 0x08, 0x60); // header size (PE data offset)
+        put_be32(&mut data, 0x10, 0); // no security block
+        put_be32(&mut data, 0x14, 2); // two optional headers
+        put_be32(&mut data, 0x18, 0x0001_0100); // entry point (inline)
+        put_be32(&mut data, 0x1C, 0x8200_0020);
+        put_be32(&mut data, 0x20, 0x0001_0201); // image base (inline data ref)
+        put_be32(&mut data, 0x24, 0x8200_0000);
+        data[0x60..0x64].copy_from_slice(&0xD503_201Fu32.to_le_bytes()); // NOP
+
+        let img = image_from_bytes(Path::new("retail.xex"), &data).unwrap();
+        assert_eq!(img.load_base, USER_BASE);
+        assert_eq!(img.entry, USER_BASE + 0x20); // RVA from the directory
+        assert_eq!(img.image, data[0x60..]); // header stripped via BE size
+        assert!(img.title_id.is_none()); // no execution-info title id
     }
 
     #[test]
