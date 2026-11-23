@@ -192,8 +192,8 @@ fn render_settings_panel(fb: &mut Framebuffer, fb_w: u32, fb_h: u32, state: &Win
         }
     }
 
-    fill_rect(fb, fb_w, px, py, pw, ph, PANEL);
-    stroke_rect(fb, fb_w, px, py, pw, ph, theme::TRANS_BLUE);
+    fill_rect_rounded(fb, fb_w, px, py, pw, ph, 10, PANEL);
+    fill_rect(fb, fb_w, px + 8, py + ph - 1, pw - 16, 1, theme::TRANS_BLUE);
     draw_flag_bar(
         fb,
         fb_w,
@@ -328,15 +328,20 @@ fn render_toolbar(
         } else {
             PANEL_ALT
         };
-        fill_rect(fb, fb_w, x, y, bw, bh, surface);
-        stroke_rect(
+        fill_rect_rounded(fb, fb_w, x, y, bw, bh, 5, surface);
+        // Thin top highlight instead of a heavy full border.
+        fill_rect(
             fb,
             fb_w,
-            x,
+            x + 5,
             y,
-            bw,
-            bh,
-            if hovered { theme::TRANS_WHITE } else { primary },
+            bw.saturating_sub(10),
+            1,
+            if hovered {
+                theme::TRANS_WHITE
+            } else {
+                theme::mix(primary, theme::TRANS_WHITE, 0.45)
+            },
         );
         // Flag-coloured stripe along the bottom of each button.
         draw_flag_bar(fb, fb_w, x + 1, y + bh - 4, bw - 2, 3, flag, true);
@@ -457,22 +462,31 @@ fn render_sidebar(
         };
         if i == state.selected_game {
             // Tinted row with a blue→pink gradient marker on the left.
-            fill_rect(
+            fill_rect_rounded(
                 fb,
                 fb_w,
                 r.x,
                 r.y,
                 r.w,
                 r.h,
+                4,
                 theme::mix(PANEL_ALT, theme::TRANS_BLUE, 0.30),
             );
             for sy in 0..r.h {
                 let t = sy as f32 / r.h.max(1) as f32;
                 fill_rect(fb, fb_w, r.x, r.y + sy, 4, 1, theme::trans_gradient(t));
             }
-            stroke_rect(fb, fb_w, r.x, r.y, r.w, r.h, theme::TRANS_PINK);
+            fill_rect(
+                fb,
+                fb_w,
+                r.x + 4,
+                r.y + r.h - 1,
+                r.w - 4,
+                1,
+                theme::TRANS_PINK,
+            );
         } else {
-            fill_rect(fb, fb_w, r.x, r.y, r.w, r.h, PANEL_ALT);
+            fill_rect_rounded(fb, fb_w, r.x, r.y, r.w, r.h, 4, PANEL_ALT);
         }
         let label = truncate(&g.title.to_uppercase(), 26);
         draw_text(
@@ -719,25 +733,34 @@ fn fit_size(aw: u32, ah: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 fn blit_rgba(
     dst: &mut Framebuffer,
     dst_w: u32,
-    dst_h: u32,
+    _dst_h: u32,
     src: &[u8],
     src_w: usize,
     src_h: usize,
     ox: u32,
     oy: u32,
 ) {
+    let dst_h_px = (dst.len() / 4 / dst_w.max(1) as usize) as u32;
     for sy in 0..src_h {
-        for sx in 0..src_w {
-            let si = (sy * src_w + sx) * 4;
-            if si + 4 > src.len() {
-                break;
-            }
-            let x = ox as usize + sx;
-            let y = oy as usize + sy;
-            if x < dst_w as usize && y < dst_h as usize {
-                let di = (y * dst_w as usize + x) * 4;
-                dst[di..di + 4].copy_from_slice(&src[si..si + 4]);
-            }
+        let y = oy as usize + sy;
+        if y >= dst_h_px as usize {
+            break;
+        }
+        let src_start = sy * src_w * 4;
+        if src_start >= src.len() {
+            break;
+        }
+        let src_end = ((sy + 1) * src_w * 4).min(src.len());
+        let ox_usize = ox as usize;
+        let available = (dst_w as usize).saturating_sub(ox_usize);
+        let copy_w = ((src_end - src_start) / 4).min(available);
+        if copy_w == 0 {
+            continue;
+        }
+        let dst_start = (y * dst_w as usize + ox as usize) * 4;
+        let dst_end = dst_start + copy_w * 4;
+        if dst_end <= dst.len() {
+            dst[dst_start..dst_end].copy_from_slice(&src[src_start..src_start + copy_w * 4]);
         }
     }
 }
@@ -769,12 +792,52 @@ pub fn stroke_rect_pub(
 }
 
 fn fill_rect(fb: &mut Framebuffer, fb_w: u32, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
-    for yy in y..y.saturating_add(h) {
-        for xx in x..x.saturating_add(w) {
-            if xx < fb_w && (yy as usize) * (fb_w as usize) + (xx as usize) < fb.len() / 4 {
-                let i = (yy as usize * fb_w as usize + xx as usize) * 4;
-                fb[i..i + 4].copy_from_slice(&color);
-            }
+    if fb_w == 0 {
+        return;
+    }
+    let fb_h_px = (fb.len() / 4 / fb_w as usize) as u32;
+    let x0 = x.min(fb_w);
+    let x1 = x.saturating_add(w).min(fb_w);
+    let y0 = y.min(fb_h_px);
+    let y1 = y.saturating_add(h).min(fb_h_px);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    // Clamp once, then copy whole rows — far cheaper than a per-pixel
+    // bounds check on every byte of a 1080p framebuffer.
+    for yy in y0..y1 {
+        let start = (yy as usize * fb_w as usize + x0 as usize) * 4;
+        let end = (yy as usize * fb_w as usize + x1 as usize) * 4;
+        for px in fb[start..end].as_chunks_mut::<4>().0 {
+            px.copy_from_slice(&color);
+        }
+    }
+}
+
+/// Fill a rounded rectangle (used for buttons and floating panels).
+#[allow(clippy::too_many_arguments)]
+fn fill_rect_rounded(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    radius: u32,
+    color: [u8; 4],
+) {
+    if w < 2 || h < 2 {
+        fill_rect(fb, fb_w, x, y, w, h, color);
+        return;
+    }
+    let r = radius.min(w / 2).min(h / 2);
+    fill_rect(fb, fb_w, x, y + r, w, h.saturating_sub(2 * r), color);
+    fill_rect(fb, fb_w, x + r, y, w.saturating_sub(2 * r), h, color);
+    for i in 0..r {
+        let cut = r - i;
+        if w > 2 * cut {
+            fill_rect(fb, fb_w, x + cut, y + i, w - 2 * cut, 1, color);
+            fill_rect(fb, fb_w, x + cut, y + h - 1 - i, w - 2 * cut, 1, color);
         }
     }
 }

@@ -1,4 +1,6 @@
-# xHoly
+# xHoly — Xbox Series S|X / Xbox One Emulator
+## Status: 62% — Phase 23/28
+[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] 62%
 
 <p align="center">
   <img src="xHoly-logo.svg" width="160" alt="xHoly logo"/>
@@ -242,6 +244,20 @@ multiplayer rules, and semaphore/channel deadlock detection.
 - Existing emulation limits still apply (see STATUS.md): simulated
   syscalls/MMU/interrupts, static shader compilation, wgpu instead of
   D3D12.
+
+## Roadmap
+
+### Phase 23 — Retail-Boot
+
+Retail-XEX2-Images sollen booten statt nur zu laden: PowerPC-Befehlssatz
+(NEON/SIMD, Bitmask-Immediates, LDP/STP, Sysregs), echte XAM-Dienste und
+ein Memory-Layer mit Page-Tables. Der aktuelle Stand ist ehrlich in
+[`STATUS.md`](STATUS.md) dokumentiert — Phase 23 ist ein Ziel, kein
+abgeschlossenes Feature.
+
+## Änderungen in dieser Version
+
+- Neues Icon + Fortschrittsanzeige im README
 
 ## Performance targets
 

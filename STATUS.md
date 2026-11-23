@@ -251,6 +251,13 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   exports, favicon
 - [x] Docs: README, INSTALL, CONTRIBUTING, CITATION.cff, whitepaper,
   GPU-API + framerate docs, MISSING.md audit
+- [x] **Icon + README status + UI polish** — `assets/icon_xholy.svg`
+  (256×256 gold X in a gold-on-black cross frame) and a stdlib-only
+  generator (`tools/render_icon_xholy.py`) that rasterises the same
+  geometry into `assets/favicon.ico` (32×32). README now carries the
+  progress line and a Phase-23 roadmap entry. The UI compositor clamps
+  and copies rows instead of checking every pixel, uses rounded controls
+  and panels, and keeps the pride palette.
 
 ## Does NOT work yet
 
@@ -377,3 +384,16 @@ würde ich echte Theme-Dateien (benutzerdefinierte Paletten) und
 Kontrastprüfung ergänzen. Ehrliche Grenze: Retail-Titel booten
 weiterhin nicht (NEON, Bitmask-Immediates, LDP/STP, Sysregs fehlen) —
 es schließt nur die UI-Lücke.
+
+## Empfhlung (OpenCode, 2026-11-23) — Icon, README, UI-Performance
+
+Neues Marken-Icon (SVG + daraus generiertes Favicon) und README-Fortschritt
+sind nachgezogen; der Compositor kopiert jetzt ganze Zeilen statt pro Pixel
+zu prüfen und nutzt abgerundete Bedienelemente. Begründung: der ICO-Generator
+kommt ohne Pillow aus und teilt die Geometrie mit der SVG, damit beide
+Darstellungen nicht auseinanderlaufen; die Fill-/Blit-Optimierung bringt den
+größten Effekt bei hohen Auflösungen, ohne die Renderer-Struktur anzutasten.
+Als Nächstes würde ich das Icon auch in die Fenster-/Tray-Darstellung
+verdrahten. Ehrliche Grenze: Retail-Titel booten weiterhin nicht (NEON,
+Bitmask-Immediates, LDP/STP, Sysregs fehlen) — es schließt nur die
+Icon-/Doku-/UI-Lücke.
