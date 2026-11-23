@@ -125,6 +125,8 @@ pub struct Arm64Cpu {
     pub preempt_handler: Option<Box<PreemptHandler>>,
     /// Retired instructions between pre-emption checks.
     pub preempt_interval: u64,
+    /// Retired instructions since the last pre-emption hook (Phase 22).
+    pub steps_since_preempt: u64,
     /// Console MMIO base (writes here append to `output`).
     pub console_base: u64,
     /// Console aperture size.
@@ -150,7 +152,8 @@ impl Arm64Cpu {
             svc_handler: None,
             preempt_handler: None,
             preempt_interval: u64::MAX, // disabled until kernel installs it
-            console_base: u64::MAX,     // disabled until kernel maps it
+            steps_since_preempt: 0,
+            console_base: u64::MAX, // disabled until kernel maps it
             console_size: 0,
         }
     }
@@ -391,7 +394,10 @@ impl Arm64Cpu {
         // op0(31-26): B=000101, BL=100101
         let b_op = (w >> 26) & 0x3F;
         if b_op == 0x05 || b_op == 0x25 {
-            let imm = Self::sext((w & 0x03FF_FFFF) as u64, 28) << 2;
+            // imm26 is a 26-bit signed word offset (not 28 bits — a
+            // 28-bit sign extension misses the sign bit for backward
+            // branches and turns them into huge forward jumps).
+            let imm = Self::sext((w & 0x03FF_FFFF) as u64, 26) << 2;
             let target = pc.wrapping_add(imm);
             if b_op == 0x25 {
                 self.set_x(30, next_pc); // LR = return address
@@ -672,26 +678,46 @@ impl Arm64Cpu {
         }
     }
 
-    /// Run until halt / error / `max_steps`. Returns steps executed.
+    /// Run until halt / error / `max_steps`. Returns the total step count.
     ///
     /// Every [`Self::preempt_interval`] retired instructions the
     /// installed [`Self::preempt_handler`] runs, giving the kernel a
     /// chance to switch threads mid-stream (pre-emptive scheduling).
     pub fn run(&mut self, max_steps: u64) -> Result<u64, Arm64Error> {
-        let mut since_preempt = 0u64;
         while self.running && self.steps < max_steps {
             self.step()?;
-            since_preempt += 1;
-            if since_preempt >= self.preempt_interval {
-                since_preempt = 0;
-                let mut handler = self.preempt_handler.take();
-                if let Some(h) = handler.as_mut() {
-                    h(self);
-                }
-                self.preempt_handler = handler;
-            }
+            self.preempt_check();
         }
         Ok(self.steps)
+    }
+
+    /// Run one bounded slice with fresh `running` state (Phase 22).
+    ///
+    /// Unlike [`Self::run`], the budget is relative to the current step
+    /// count and `running` is re-armed at the start. This lets a
+    /// persistent guest session resume at the saved `pc` every frame:
+    /// a `SYS_FRAME_END` or `BRK` only ends *this* slice.
+    /// Returns the number of steps retired in this slice.
+    pub fn run_slice(&mut self, max_steps: u64) -> Result<u64, Arm64Error> {
+        self.running = true;
+        let start = self.steps;
+        while self.running && self.steps - start < max_steps {
+            self.step()?;
+            self.preempt_check();
+        }
+        Ok(self.steps - start)
+    }
+
+    fn preempt_check(&mut self) {
+        self.steps_since_preempt += 1;
+        if self.steps_since_preempt >= self.preempt_interval {
+            self.steps_since_preempt = 0;
+            let mut handler = self.preempt_handler.take();
+            if let Some(h) = handler.as_mut() {
+                h(self);
+            }
+            self.preempt_handler = handler;
+        }
     }
 }
 

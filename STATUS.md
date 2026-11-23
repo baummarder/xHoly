@@ -184,6 +184,31 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   directory; `raw_offset` is an uncompressed-layout estimate, and the
   guest CPU still cannot execute PowerPC/FX code. Retail titles do not
   boot — this closes only the loader/header gap.
+- [x] **Phase 22 bootable minigame + persistent guest loop** —
+  `games/minigame/default.xex` (regenerable via
+  `cargo run --example gen_minigame_game`) is a **real big-endian XEX2**
+  whose AArch64 payload runs a game loop: timer (`SYS_TICKS`), host input
+  from the new guest input aperture (`GUEST_INPUT_BASE`), framebuffer
+  sequence bump, a moving coloured row, then `SYS_FRAME_END` to yield.
+  `GuestSession` (`core::execution`) owns CPU + kernel across frames;
+  `Arm64Cpu::run_slice` resumes at the saved PC, keeps registers/memory/
+  ticks, writes host input before each slice and holds the last frame.
+  GUI Launch now creates a session and `tick_guest()` advances it once
+  per GUI frame; held keyboard keys map to guest buttons. Also fixed a
+  real interpreter bug: unconditional branches sign-extended imm26 as
+  28 bits, turning backward jumps into far-forward jumps.
+  **Honest limits:** 160×120 FB, one painted row per frame, left/right/
+  up/down/A only, no sustained audio/HID or retail PowerPC titles.
+- [x] **Phase 23 direct guest→GPU path** — `WgpuRenderer::render_guest_frame`
+  uploads guest RGBA straight into a wgpu texture and blits it with the
+  GUI shader; while a guest runs, `WindowApp::render_frame` uses this
+  path instead of CPU-compositing the guest frame into the UI. The last
+  frame is held by `GuestSession` when the guest writes nothing, and
+  the framebuffer/input apertures are bounds-checked against the kernel
+  memory-layer region table plus the flat guest buffer.
+  **Honest limits:** the guest FB is scaled by the blit shader (no
+  guest draw-call translation), and the UI overlay is suppressed while
+  a guest is running.
 - [x] **Phase 20 XEX2 image decode** (`src/core/loader/image_decode.rs`) —
   the retail payload is now decoded instead of mapped verbatim:
   AES-128-CBC with zero IV (Xenia `aes_decrypt_buffer`, not CTR) using
@@ -231,10 +256,11 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   executes in a Rust WASM interpreter, not machine code; a
   dynasm-style JIT remains future work. The guest CPU loop still runs
   the ARM64-style interpreter; `compile_and_run` is the x86-64 entry.
-- [ ] Guest frames reach the windowed preview via CPU compositing, but
-  there is still no guest→GPU draw path (shaders, swapchain present of
-  guest-rendered content); launches are one-shot runs, not sustained
-  emulation sessions
+- [ ] Guest frames now reach the GPU directly (Phase 23), but there is
+  still no guest→GPU **draw-call** translation (shaders/swapchain
+  submitted by the guest); the guest paints into a fixed 160×120 FB that
+  the host scales. Sessions are persistent across frames (Phase 22),
+  not one-shot, but the GUI overlay is hidden while a game runs
 - [ ] GUI still on winit; `--native-wm` proves the C++ WM works but
   the main windowed GUI hasn't migrated to it.
 - [ ] GPU translation covers a documented subset only — no LLVM/DXIL
@@ -243,10 +269,13 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 - [ ] Save states / load states are UI stubs (slot list only)
 - [ ] Cheats are a toggle flag, no cheat engine
 - [ ] TUI + windowed Launch run the real game path and show console
-  output + guest framebuffer frames; sustained multi-frame guest
-  execution inside the GUI loop is still future work
+  output + guest framebuffer frames; the windowed GUI now sustains
+  multi-frame guest execution (Phase 22), the TUI Launch is still a
+  one-shot `game_runner::run_path`
 - [ ] Audio output is a driver abstraction with no real stream
-- [ ] Controller/HID input not wired to the GUI
+- [ ] Controller/HID input not wired to the GUI — keyboard buttons and
+  mouse coordinates reach the guest input aperture, but no real
+  gamepad/XInput device is connected yet
 - [ ] The Rust GUI and the C++ window manager are **not integrated** —
   the C++ module is standalone infrastructure
 - [ ] Multi-window managed-app features (real secondary windows in the
@@ -304,3 +333,20 @@ Framebuffer zu blitten; das ist der sichtbare Gewinn, den die
 Plattformentscheidung vorbereitet. Ehrliche Grenze: Retail-Titel booten
 weiterhin nicht (NEON, Bitmask-Immediates, LDP/STP, Sysregs fehlen) —
 es schließt nur die GPU-Entscheidungslücke.
+
+## Empfhlung (OpenCode, 2026-11-23) — Spielbares Gast-Spiel
+
+Phasen 22/23 machen aus dem Scaffold zum ersten Mal etwas Spielbares:
+ein echtes XEX2 bootet, läuft als persistenter Frame-Loop, reagiert auf
+gehaltene Tasten und zeigt seine Frames direkt auf der GPU. Ich habe
+zuerst das Image und den Session-Loop gebaut und erst danach den GPU-
+Pfad, weil ein direkter Blit ohne laufendes Guest-Frame wertlos wäre.
+Begründung: der Input-Apertur-Ansatz braucht keine neue Device-FFI, ist
+vom Guest mit normalen `LDR`-Befehlen lesbar und damit deterministisch
+testbar; der `SYS_FRAME_END`-Yield hält die Guest-Zeit über Frames hinweg,
+ohne Threads oder VM-Snapshots einzuführen. Dabei fiel ein echter
+Interpreter-Fehler auf (imm26-Fortzeichen), der jetzt behoben ist. Als
+Nächstes würde ich die TUI auf dieselbe `GuestSession` umstellen und
+den 160×120-FB auflösungsunabhängig machen. Ehrliche Grenze: Retail-Titel
+booten weiterhin nicht (NEON, Bitmask-Immediates, LDP/STP, Sysregs
+fehlen) — es schließt nur die Decoder-, Loop- und GPU-Lücke.

@@ -29,6 +29,26 @@ pub struct GuestFrame {
     pub pixels: Vec<u8>,
 }
 
+/// Host-side input state for one guest frame (Phase 22).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GuestInput {
+    /// Button bitmask: bit0 left, bit1 right, bit2 up, bit3 down, bit4 A.
+    pub buttons: u32,
+    /// Horizontal analog delta.
+    pub dx: i32,
+    /// Vertical analog delta.
+    pub dy: i32,
+}
+
+impl GuestInput {
+    /// Standard button bits used by the bundled minigame.
+    pub const LEFT: u32 = 1 << 0;
+    pub const RIGHT: u32 = 1 << 1;
+    pub const UP: u32 = 1 << 2;
+    pub const DOWN: u32 = 1 << 3;
+    pub const A: u32 = 1 << 4;
+}
+
 /// Result of running a guest image.
 #[derive(Debug)]
 pub struct RunReport {
@@ -133,6 +153,90 @@ pub fn run_game_path(path: &std::path::Path, max_steps: u64) -> Result<RunReport
         image.entry
     );
     execute_game(&image, max_steps).map_err(|e| e.to_string())
+}
+
+/// A **persistent** guest session (Phase 22).
+///
+/// Owns the interpreter and kernel for the whole lifetime of a game.
+/// [`Self::run_frame`] advances exactly one guest timeslice: host input
+/// is written to the guest input aperture, the CPU runs until the guest
+/// signals `SYS_FRAME_END` (or exhausts the step budget), and the guest
+/// framebuffer is sampled. Nothing is reset between frames — registers,
+/// guest memory, the kernel tick counter and the last rendered frame
+/// all persist, so the guest keeps running across GUI frames.
+///
+/// The kernel installs raw pointers to itself in the CPU's SVC/preempt
+/// handlers. Callers must therefore keep the session at a stable
+/// address — use a `Box<GuestSession>` when embedding it in a GUI app.
+pub struct GuestSession {
+    /// Guest CPU (state persists across frames).
+    pub cpu: Arm64Cpu,
+    /// Kernel stub (syscalls, scheduler, tick counter).
+    pub kernel: Kernel,
+    /// Last frame the guest wrote. Kept when a frame writes nothing.
+    last_frame: Option<GuestFrame>,
+    /// Number of host frames advanced.
+    pub frames: u64,
+    /// Maximum retired instructions per guest frame.
+    pub frame_budget: u64,
+}
+
+impl std::fmt::Debug for GuestSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuestSession")
+            .field("frames", &self.frames)
+            .field("pc", &self.cpu.pc)
+            .field("steps", &self.cpu.steps)
+            .field("ticks", &self.kernel.ticks)
+            .field("has_frame", &self.last_frame.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl GuestSession {
+    /// Load `image` and create a session. Returns a boxed instance so
+    /// the kernel's self-pointers stay valid when it is embedded.
+    pub fn new(image: &GameImage, frame_budget: u64) -> Result<Box<Self>, String> {
+        let mut cpu = Arm64Cpu::new(GUEST_MEM_SIZE);
+        cpu.va_base = kernel::KERNEL_BASE;
+        cpu.sp = cpu.va_base + GUEST_MEM_SIZE as u64 - 16;
+        let kernel = Kernel::new(&cpu);
+        let mut session = Box::new(Self {
+            cpu,
+            kernel,
+            last_frame: None,
+            frames: 0,
+            frame_budget: frame_budget.max(1),
+        });
+        // Install handlers only after the Kernel is at its final address.
+        session.kernel.attach(&mut session.cpu);
+        image
+            .load_into(&mut session.cpu)
+            .map_err(|_| format!("failed to load '{}'", image.title))?;
+        Ok(session)
+    }
+
+    /// Advance one guest frame with the given host input.
+    ///
+    /// Returns the frame to present: a newly written guest frame, or —
+    /// when the guest wrote nothing this slice — the held last frame.
+    pub fn run_frame(&mut self, input: GuestInput) -> Result<Option<GuestFrame>, String> {
+        kernel::write_guest_input(&mut self.cpu, input.buttons, input.dx, input.dy)
+            .map_err(|e| e.to_string())?;
+        self.cpu
+            .run_slice(self.frame_budget)
+            .map_err(|e| e.to_string())?;
+        if let Some(frame) = read_guest_frame(&self.cpu) {
+            self.last_frame = Some(frame);
+        }
+        self.frames += 1;
+        Ok(self.last_frame.clone())
+    }
+
+    /// Last rendered frame (held across empty frames).
+    pub fn last_frame(&self) -> Option<&GuestFrame> {
+        self.last_frame.as_ref()
+    }
 }
 
 /// Assemble a tiny "Hello, xHoly!" ARM64 program for tests/demos:
@@ -260,6 +364,121 @@ mod tests {
         };
         let report = execute_game(&img, 100).expect("run");
         assert!(report.frame.is_none());
+    }
+
+    fn minigame_image() -> crate::core::loader::GameImage {
+        crate::core::loader::load_game(std::path::Path::new("games/minigame"))
+            .expect("load bundled minigame")
+    }
+
+    fn fb_seq(session: &GuestSession) -> u32 {
+        let rel = (kernel::GUEST_FB_BASE - session.cpu.va_base) as usize + 12;
+        u32::from_le_bytes(session.cpu.memory[rel..rel + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn minigame_boots_and_renders_a_real_frame() {
+        // Phase 22: the bundled .xex boots through loader → interpreter →
+        // kernel and paints a real framebuffer frame on frame one.
+        let session = GuestSession::new(&minigame_image(), 100_000).expect("session");
+        let mut session = session;
+        let frame = session
+            .run_frame(GuestInput::default())
+            .expect("frame")
+            .expect("guest wrote a frame");
+        assert_eq!(frame.width, kernel::GUEST_FB_W);
+        assert_eq!(frame.height, kernel::GUEST_FB_H);
+        assert_eq!(frame.seq, 1);
+        assert_eq!(
+            frame.pixels.len(),
+            (frame.width * frame.height * 4) as usize
+        );
+        // Default input (no buttons) paints a red row somewhere in the FB.
+        assert!(frame
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p == &[200, 40, 40, 255]));
+        assert!(session.cpu.steps > 100);
+        assert!(session.kernel.ticks > 0);
+    }
+
+    #[test]
+    fn minigame_loop_persists_across_frames() {
+        // No reset on black: registers, guest memory, PC and the kernel
+        // tick counter all survive across host frames.
+        let mut session = GuestSession::new(&minigame_image(), 100_000).expect("session");
+        let first = session
+            .run_frame(GuestInput::default())
+            .expect("frame")
+            .unwrap();
+        let pc_after_first = session.cpu.pc;
+        let steps_after_first = session.cpu.steps;
+        let ticks_after_first = session.kernel.ticks;
+
+        let second = session
+            .run_frame(GuestInput::default())
+            .expect("frame")
+            .unwrap();
+        assert_eq!(fb_seq(&session), 2);
+        assert_eq!(second.seq, 2);
+        assert_eq!(session.cpu.pc, pc_after_first);
+        assert!(session.cpu.steps > steps_after_first);
+        assert!(session.kernel.ticks > ticks_after_first);
+        assert_eq!(session.frames, 2);
+        // Row moves with the tick counter, so the frame changes.
+        assert_ne!(first.pixels, second.pixels, "row should move");
+    }
+
+    #[test]
+    fn minigame_reacts_to_host_input() {
+        let mut session = GuestSession::new(&minigame_image(), 100_000).expect("session");
+        let red = session.run_frame(GuestInput::default()).unwrap().unwrap();
+        assert!(red
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p == &[200, 40, 40, 255]));
+        let cyan = session
+            .run_frame(GuestInput {
+                buttons: GuestInput::LEFT,
+                dx: -1,
+                dy: 0,
+            })
+            .unwrap()
+            .unwrap();
+        // Cyan appears somewhere in the freshly painted row.
+        assert!(
+            cyan.pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|p| p == &[30, 226, 226, 255]),
+            "input should switch the sprite colour to cyan"
+        );
+        // The host wrote the input aperture with a rising sequence.
+        let rel = (kernel::GUEST_INPUT_BASE - session.cpu.va_base) as usize;
+        assert_eq!(session.cpu.memory[rel], GuestInput::LEFT as u8);
+        assert_eq!(
+            u32::from_le_bytes(session.cpu.memory[rel + 12..rel + 16].try_into().unwrap()),
+            2
+        );
+    }
+
+    #[test]
+    fn session_holds_last_frame_when_guest_stops_writing() {
+        let mut session = GuestSession::new(&minigame_image(), 100_000).expect("session");
+        let first = session.run_frame(GuestInput::default()).unwrap().unwrap();
+        // Replace the guest's *current* PC (the frame-end branch) with
+        // BRK: the next slice yields immediately without painting.
+        let at = (session.cpu.pc - session.cpu.va_base) as usize;
+        session.cpu.memory[at..at + 4].copy_from_slice(&0xD420_0000u32.to_le_bytes());
+        let held = session.run_frame(GuestInput::default()).unwrap().unwrap();
+        assert_eq!(held.seq, first.seq);
+        assert_eq!(held.pixels, first.pixels);
+        assert!(session.last_frame().is_some());
     }
 
     #[test]

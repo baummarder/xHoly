@@ -16,6 +16,7 @@ pub mod state;
 pub mod ui;
 pub mod window;
 
+use crate::core::execution::{GuestInput, GuestSession};
 use crate::gui::gpu_api_detector::{self, GpuApi, GpuApiPreference};
 use crate::gui::native_gpu_backend::NativeGpuBackend;
 use crate::gui::renderer::GuiFrameRenderer;
@@ -45,6 +46,9 @@ pub struct WindowApp {
     slow_frames: u32,
     /// Frame-rate limiter shared by windowed + headless paths.
     pacer: FramePacer,
+    /// Persistent guest session while a game is running (Phase 22).
+    /// Boxed so the kernel's self-pointers stay valid.
+    session: Option<Box<GuestSession>>,
     /// Set when the app should exit.
     pub should_exit: bool,
 }
@@ -82,6 +86,7 @@ impl WindowApp {
             fps_ema: 0.0,
             slow_frames: 0,
             pacer,
+            session: None,
             should_exit: false,
         }
     }
@@ -101,6 +106,21 @@ impl WindowApp {
     /// loop holds a steady cadence instead of spinning uncapped.
     pub fn render_frame(&mut self) -> Result<(), String> {
         self.pacer.record_frame_start();
+        // Advance the persistent guest by one frame before presenting.
+        self.tick_guest();
+        // While a guest is running its framebuffer goes straight to the
+        // GPU renderer — no software UI composite in the guest path.
+        let guest_frame = if self.state.running {
+            self.state.guest_frame.clone()
+        } else {
+            None
+        };
+        if let (Some(frame), Some(renderer)) = (guest_frame.as_ref(), self.renderer.as_mut()) {
+            renderer.render_guest_frame(frame)?;
+            self.tick_fps();
+            self.pacer.sleep_until_next_frame();
+            return Ok(());
+        }
         let (w, h) = self.state.resolution;
         let (fb, _layout) = ui::composite(&self.state, w, h);
         if let Some(r) = self.renderer.as_mut() {
@@ -202,26 +222,84 @@ impl WindowApp {
             return;
         };
         self.push_log(&format!("xHoly: launching {}", path.display()));
-        match crate::core::loader::game_runner::run_path(&path, 500_000) {
-            Ok(outcome) => {
-                let text = String::from_utf8_lossy(&outcome.report.output);
-                for line in text.lines() {
-                    self.push_log(line);
-                }
-                for line in &outcome.report.kernel_log {
-                    self.push_log(&format!("kernel: {line}"));
-                }
-                if let Some(f) = outcome.report.frame {
-                    self.state.guest_frame = Some(f);
-                }
-                self.push_log(&format!(
-                    "xHoly: guest exited after {} steps",
-                    outcome.report.steps
-                ));
+        let image = match crate::core::loader::load_game(&path) {
+            Ok(image) => image,
+            Err(e) => {
+                self.push_log(&format!("xHoly: launch failed: {e}"));
+                return;
             }
-            Err(e) => self.push_log(&format!("xHoly: launch failed: {e}")),
+        };
+        let mut session = match GuestSession::new(&image, 100_000) {
+            Ok(session) => session,
+            Err(e) => {
+                self.push_log(&format!("xHoly: launch failed: {e}"));
+                return;
+            }
+        };
+        let input = self.guest_input();
+        if let Ok(Some(frame)) = session.run_frame(input) {
+            self.state.guest_frame = Some(frame);
         }
-        self.state.running = false;
+        self.drain_guest_output(&mut session);
+        self.push_log(&format!(
+            "xHoly: guest frame 1 after {} steps",
+            session.cpu.steps
+        ));
+        self.session = Some(session);
+        self.state.running = true;
+    }
+
+    /// Build guest input from the GUI's current held keys + mouse.
+    fn guest_input(&self) -> GuestInput {
+        GuestInput {
+            buttons: self.input.guest_buttons,
+            dx: self.input.mouse.0.clamp(-127.0, 127.0) as i32,
+            dy: self.input.mouse.1.clamp(-127.0, 127.0) as i32,
+        }
+    }
+
+    /// Forward guest console output into the on-screen console pane.
+    fn drain_guest_output(&mut self, session: &mut GuestSession) {
+        let bytes = std::mem::take(&mut session.cpu.output);
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            self.push_log(line);
+        }
+        let lines = std::mem::take(&mut session.kernel.log);
+        for line in lines {
+            self.push_log(&format!("kernel: {line}"));
+        }
+    }
+
+    /// Advance the running guest by one frame (Phase 22).
+    ///
+    /// Called once per GUI frame from [`Self::render_frame`]. Guest state
+    /// persists in `self.session`; when the guest writes no framebuffer
+    /// the previously captured frame is kept.
+    pub fn tick_guest(&mut self) {
+        if !self.state.running || self.state.paused || self.session.is_none() {
+            return;
+        }
+        let input = self.guest_input();
+        let result = self
+            .session
+            .as_mut()
+            .map(|session| session.run_frame(input));
+        match result {
+            Some(Ok(Some(frame))) => self.state.guest_frame = Some(frame),
+            Some(Ok(None)) => {} // hold last frame
+            Some(Err(e)) => {
+                self.push_log(&format!("xHoly: guest error: {e}"));
+                self.state.running = false;
+            }
+            None => self.state.running = false,
+        }
+        // Take the boxed session out briefly so `self` can be borrowed
+        // mutably by the log drain, then put it back at the same heap
+        // address (its kernel self-pointers remain valid).
+        if let Some(mut session) = self.session.take() {
+            self.drain_guest_output(&mut session);
+            self.session = Some(session);
+        }
     }
 
     /// Append a console line, keeping the last 200 entries.
@@ -462,6 +540,7 @@ pub fn run_headless(
         let mut last_fb = Vec::new();
         for _ in 0..frames.max(1) {
             app.pacer.record_frame_start();
+            app.tick_guest();
             let (fb, _layout) = ui::composite(&app.state, w, h);
             sw.render_frame(&fb, w, h)?;
             last_fb = fb;
@@ -482,6 +561,7 @@ pub fn run_headless(
     let mut last_fb = Vec::new();
     for _ in 0..frames.max(1) {
         app.pacer.record_frame_start();
+        app.tick_guest();
         let (fb, _layout) = ui::composite(&app.state, w, h);
         last_fb = fb.clone();
         if let Some(r) = app.renderer.as_mut() {
@@ -602,6 +682,10 @@ mod tests {
             ..Default::default()
         };
         let mut app = WindowApp::new_headless(config, GpuApi::Software);
+        // Pin the selection: the scanner also finds games/minigame,
+        // which sorts before games/minimal.
+        app.state.games.clear();
+        app.state.selected_game = 0;
         app.state.games.push(GameListItem {
             title: "xHoly Minimal Guest".into(),
             path: "games/minimal".into(),
@@ -622,6 +706,50 @@ mod tests {
         assert_eq!(&frame.pixels[0..4], &[200, 40, 40, 255]);
         let last = frame.pixels.len() - 4;
         assert_eq!(&frame.pixels[last..], &[30, 226, 226, 255]);
+    }
+
+    #[test]
+    fn minigame_runs_across_gui_frames_with_input() {
+        // Phase 22: Launch creates a persistent GuestSession; each GUI
+        // frame advances the guest instead of restarting it.
+        let config = GuiConfig {
+            window_size: (320, 200),
+            fps_limit: None,
+            ..Default::default()
+        };
+        let mut app = WindowApp::new_headless(config, GpuApi::Software);
+        app.state.games.clear();
+        app.state.selected_game = 0;
+        app.state.games.push(GameListItem {
+            title: "xHoly Minigame".into(),
+            path: "games/minigame".into(),
+            cover_art: None,
+            region: "OTHER".into(),
+            discs: 1,
+            release_date: None,
+            is_multi_disc: false,
+            last_played: None,
+        });
+        app.launch();
+        assert!(app.state.running);
+        let first_seq = app.state.guest_frame.as_ref().expect("frame").seq;
+        let first_pc = app.session.as_ref().expect("session").cpu.pc;
+
+        // Hold the guest's LEFT button: the sprite must switch to cyan.
+        app.input.guest_buttons = crate::core::execution::GuestInput::LEFT;
+        app.tick_guest();
+        app.tick_guest();
+
+        let frame = app.state.guest_frame.as_ref().expect("held frame");
+        assert_eq!(frame.seq, first_seq + 2);
+        assert_eq!(app.session.as_ref().unwrap().cpu.pc, first_pc);
+        assert!(frame
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p == &[30, 226, 226, 255]));
+        assert_eq!(app.session.as_ref().unwrap().frames, 3);
     }
 
     #[test]

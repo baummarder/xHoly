@@ -39,6 +39,8 @@ pub struct WgpuRenderer {
     postfx: Option<super::postfx::PostFx>,
     /// Offscreen final-output texture (post-FX path readback).
     present_texture: Option<wgpu::Texture>,
+    /// Number of guest frames uploaded through the direct GPU path.
+    guest_frames_uploaded: u64,
 }
 
 impl WgpuRenderer {
@@ -110,6 +112,7 @@ impl WgpuRenderer {
             postfx_config: crate::gui::postfx::PostFxConfig::default(),
             postfx: None,
             present_texture: None,
+            guest_frames_uploaded: 0,
         })
     }
 
@@ -162,7 +165,29 @@ impl WgpuRenderer {
             postfx_config: crate::gui::postfx::PostFxConfig::default(),
             postfx: None,
             present_texture: None,
+            guest_frames_uploaded: 0,
         })
+    }
+
+    /// Upload a guest framebuffer frame straight to a wgpu texture and
+    /// draw it — the guest pixels never pass through the CPU UI
+    /// compositor (Phase 23). The frame is held by `GuestSession` when
+    /// the guest writes nothing, and `read_guest_frame` bounds-checks the
+    /// guest VA against the memory-layer region table.
+    pub fn render_guest_frame(
+        &mut self,
+        frame: &crate::core::execution::GuestFrame,
+    ) -> Result<(), String> {
+        self.guest_frames_uploaded += 1;
+        // The existing texture upload + fullscreen shader blit is already
+        // a direct RGBA→GPU path; feeding guest pixels here bypasses
+        // `ui::composite` entirely.
+        self.render_rgba(&frame.pixels, frame.width, frame.height)
+    }
+
+    /// How many frames went through the direct guest→GPU path.
+    pub fn guest_frames_uploaded(&self) -> u64 {
+        self.guest_frames_uploaded
     }
 
     /// Configure the Phase-9 post-processing pipeline (bloom, tone
@@ -515,5 +540,41 @@ impl WgpuRenderer {
             ..Default::default()
         });
         (pipeline, bgl, sampler)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::execution::GuestFrame;
+    use crate::gui::postfx::{AaMethod, PostFxConfig, ToneMapping};
+
+    #[test]
+    fn guest_frame_uploads_directly_to_gpu() {
+        let Ok(mut renderer) = WgpuRenderer::new_offscreen(160, 120) else {
+            eprintln!("skipping GPU test (no adapter)");
+            return;
+        };
+        // Plain blit so the readback contains the guest pixels unchanged.
+        renderer.set_postfx(PostFxConfig {
+            bloom: false,
+            bloom_strength: 0.0,
+            bloom_threshold: 1.0,
+            tone_mapping: ToneMapping::Linear,
+            aa: AaMethod::Off,
+        });
+        let mut pixels = vec![0u8; 160 * 120 * 4];
+        pixels[0..4].copy_from_slice(&[200, 40, 40, 255]);
+        let frame = GuestFrame {
+            width: 160,
+            height: 120,
+            seq: 7,
+            pixels,
+        };
+        renderer.render_guest_frame(&frame).expect("guest blit");
+        assert_eq!(renderer.guest_frames_uploaded(), 1);
+        let out = renderer.readback(160, 120).expect("readback");
+        assert_eq!(out.len(), 160 * 120 * 4);
+        assert_eq!(&out[0..4], &[200, 40, 40, 255]);
     }
 }

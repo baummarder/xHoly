@@ -37,7 +37,7 @@ pub use scheduler::{
 pub use syscall::{KernelObjects, HEAP_ARENA_SIZE, HEAP_BASE};
 pub use xam::{import_stub_va, XamImport, XamTable, IMPORT_STUB_BASE};
 
-use crate::core::cpu::interpreter::{Arm64Cpu, SvcCall};
+use crate::core::cpu::interpreter::{Arm64Cpu, Arm64Error, SvcCall};
 
 // ---------------------------------------------------------------------------
 // Memory layout constants (re-exported from memory.rs for compat)
@@ -68,6 +68,63 @@ pub const GUEST_FB_HEADER: usize = 16;
 /// Total aperture size (header + pixels).
 pub const GUEST_FB_SIZE: usize =
     GUEST_FB_HEADER + (GUEST_FB_W as usize) * (GUEST_FB_H as usize) * 4;
+
+// ---------------------------------------------------------------------------
+// Guest input aperture (Phase 22)
+// ---------------------------------------------------------------------------
+
+/// Guest VA of the input aperture. Host writes button/delta state here
+/// before each frame; the guest reads it with plain `LDR W` instructions.
+/// Sits just above the framebuffer aperture, inside the user VA window.
+pub const GUEST_INPUT_BASE: u64 = 0x8000_0190_0000;
+/// Input aperture size: buttons, dx, dy, sequence (four u32).
+pub const GUEST_INPUT_SIZE: usize = 16;
+
+/// Write host input state into the guest input aperture.
+///
+/// Bounds-checked against the kernel memory-layer region table and the
+/// flat guest buffer, exactly like the framebuffer aperture.
+pub fn write_guest_input(
+    cpu: &mut Arm64Cpu,
+    buttons: u32,
+    dx: i32,
+    dy: i32,
+) -> Result<(), Arm64Error> {
+    use memory::region_of;
+    let region = region_of(GUEST_INPUT_BASE).ok_or(Arm64Error::MemoryFault {
+        addr: GUEST_INPUT_BASE,
+        write: true,
+    })?;
+    if !region.permissions.write || region.permissions.supervisor {
+        return Err(Arm64Error::MemoryFault {
+            addr: GUEST_INPUT_BASE,
+            write: true,
+        });
+    }
+    let rel = GUEST_INPUT_BASE
+        .checked_sub(cpu.va_base)
+        .ok_or(Arm64Error::MemoryFault {
+            addr: GUEST_INPUT_BASE,
+            write: true,
+        })? as usize;
+    if rel + GUEST_INPUT_SIZE > cpu.memory.len() {
+        return Err(Arm64Error::MemoryFault {
+            addr: GUEST_INPUT_BASE,
+            write: true,
+        });
+    }
+    let seq = cpu
+        .memory
+        .get(rel + 12..rel + 16)
+        .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
+        .unwrap_or(0)
+        .wrapping_add(1);
+    cpu.memory[rel..rel + 4].copy_from_slice(&buttons.to_le_bytes());
+    cpu.memory[rel + 4..rel + 8].copy_from_slice(&dx.to_le_bytes());
+    cpu.memory[rel + 8..rel + 12].copy_from_slice(&dy.to_le_bytes());
+    cpu.memory[rel + 12..rel + 16].copy_from_slice(&seq.to_le_bytes());
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Syscall numbers — Phase-10 table (x0 = number, x1–x7 = args)
@@ -110,6 +167,10 @@ pub const SYS_SET_CONTEXT: u64 = 16;
 /// svc#17 — query ticks (xHoly extension; kept off the prompt's
 /// svc#8 which is Suspend in the Phase-10 table).
 pub const SYS_TICKS: u64 = 17;
+/// svc#18 — end the current guest frame and yield to the host loop
+/// (xHoly extension). The guest resumes at the following instruction
+/// on the next frame; its registers and memory are preserved.
+pub const SYS_FRAME_END: u64 = 18;
 
 // ---------------------------------------------------------------------------
 // Kernel
@@ -343,6 +404,12 @@ impl Kernel {
             }
             SYS_TICKS => {
                 cpu.set_reg(0, self.ticks);
+            }
+            SYS_FRAME_END => {
+                // Frame boundary: stop the current slice without tearing
+                // down guest state. `GuestSession` clears `running` again
+                // before the next frame, so the guest resumes here.
+                cpu.running = false;
             }
             SYS_EXIT => {
                 self.threads[self.current].state = THREAD_DEAD;

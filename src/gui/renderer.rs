@@ -19,6 +19,14 @@ pub trait GuiFrameRenderer {
     fn resize(&mut self, width: u32, height: u32);
     /// Upload `rgba` (width×height×4 bytes) and draw one frame.
     fn render_frame(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<(), String>;
+    /// Draw a guest framebuffer frame without CPU compositing (Phase 23).
+    /// Fallbacks simply upload the raw pixels.
+    fn render_guest_frame(
+        &mut self,
+        frame: &crate::core::execution::GuestFrame,
+    ) -> Result<(), String> {
+        self.render_frame(&frame.pixels, frame.width, frame.height)
+    }
     /// Human-readable backend name for the info panel.
     fn backend_name(&self) -> &'static str;
     /// The GPU API this backend uses.
@@ -43,6 +51,13 @@ impl GuiFrameRenderer for crate::gui::windowed::renderer::WgpuRenderer {
 
     fn render_frame(&mut self, rgba: &[u8], width: u32, height: u32) -> Result<(), String> {
         crate::gui::windowed::renderer::WgpuRenderer::render_rgba(self, rgba, width, height)
+    }
+
+    fn render_guest_frame(
+        &mut self,
+        frame: &crate::core::execution::GuestFrame,
+    ) -> Result<(), String> {
+        crate::gui::windowed::renderer::WgpuRenderer::render_guest_frame(self, frame)
     }
 
     fn backend_name(&self) -> &'static str {

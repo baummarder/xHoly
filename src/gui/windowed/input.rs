@@ -41,6 +41,9 @@ pub struct InputState {
     pub mouse: (f64, f64),
     /// Left button currently held.
     pub mouse_down: bool,
+    /// Buttons currently held for the guest (Phase 22): bit0 left,
+    /// bit1 right, bit2 up, bit3 down, bit4 A.
+    pub guest_buttons: u32,
 }
 
 impl InputState {
@@ -49,8 +52,28 @@ impl InputState {
         Self::default()
     }
 
-    /// Map a winit keyboard event to GUI actions.
+    /// Guest-facing button bits for a keyboard key (0 = none).
+    fn guest_bit(code: &winit::keyboard::Key) -> u32 {
+        match code {
+            Key::Named(winit::keyboard::NamedKey::ArrowLeft) => 1 << 0,
+            Key::Named(winit::keyboard::NamedKey::ArrowRight) => 1 << 1,
+            Key::Named(winit::keyboard::NamedKey::ArrowUp) => 1 << 2,
+            Key::Named(winit::keyboard::NamedKey::ArrowDown) => 1 << 3,
+            Key::Character(s) if s.eq_ignore_ascii_case("a") => 1 << 4,
+            _ => 0,
+        }
+    }
+
+    /// Map a winit keyboard event to GUI actions and guest buttons.
     pub fn keyboard_input(&mut self, event: &KeyEvent) {
+        let bit = Self::guest_bit(&event.logical_key);
+        if bit != 0 {
+            if event.state == ElementState::Pressed {
+                self.guest_buttons |= bit;
+            } else {
+                self.guest_buttons &= !bit;
+            }
+        }
         if event.state != ElementState::Pressed {
             return;
         }
