@@ -207,6 +207,9 @@ pub struct XexHeader {
     pub directory: Vec<XexOptHeader>,
     /// Security block with page descriptors (real XEX2 only).
     pub security: Option<XexSecurityInfo>,
+    /// File offset of the security block (0 for the scaffold fixture).
+    /// The image decoder reads the encrypted session key from +0x150.
+    pub security_offset: u32,
 }
 
 impl XexHeader {
@@ -537,6 +540,7 @@ pub fn parse_xex(data: &[u8], source: &Path) -> Result<XexHeader, LoadError> {
             format: XexFormat::Xex2,
             directory,
             security,
+            security_offset,
         });
     }
 
@@ -573,6 +577,7 @@ pub fn parse_xex(data: &[u8], source: &Path) -> Result<XexHeader, LoadError> {
         format: XexFormat::Scaffold,
         directory: Vec::new(),
         security: None,
+        security_offset: 0,
     })
 }
 

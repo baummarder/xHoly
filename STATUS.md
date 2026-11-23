@@ -171,6 +171,22 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   directory; `raw_offset` is an uncompressed-layout estimate, and the
   guest CPU still cannot execute PowerPC/FX code. Retail titles do not
   boot — this closes only the loader/header gap.
+- [x] **Phase 20 XEX2 image decode** (`src/core/loader/image_decode.rs`) —
+  the retail payload is now decoded instead of mapped verbatim:
+  AES-128-CBC with zero IV (Xenia `aes_decrypt_buffer`, not CTR) using
+  the session key from security info +0x150 (retail/devkit two-key
+  probe), BASIC data/zero-run expansion, LZX-normal de-blocking
+  (u32 block size + 20-byte digest + u16 chunk framing) and a pure-Rust
+  **regular LZX** decompressor (32 KiB frames, verbatim/aligned/
+  uncompressed blocks, canonical Huffman trees, R0/R1/R2 offsets,
+  Intel E8 fixups). `image_from_bytes` routes real XEX2 through this
+  path; legacy scaffold images stay raw. Verified with NIST FIPS-197 /
+  SP 800-38A AES vectors, the known libmspack uncompressed-block
+  stream, a self-built verbatim block, and synthetic XEX fixtures.
+  **Honest limits:** LZX block SHA1 digests are parsed but not verified;
+  no LZX DELTA patch application; 4 KiB-page LZX is clamped to a 32 KiB
+  window; the embedded PowerPC PE, imports and system flags are still
+  not interpreted, so retail titles still do not boot.
 - [x] **Phase 12 rendering additions** — `src/gui/windowed/
   frame_buffer.rs` (fused color+depth `FrameBuffer`, Load/Clear pass
   API, dark-Xbox clear color) and DXBC-style texture containers in
@@ -190,10 +206,10 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 
 - [ ] **No retail game runs** — the ARM64 interpreter covers a useful
   subset but real titles need NEON/SIMD, bitmask immediates,
-  load/store pairs, sysregs, image decryption/decompression and a real
-  import parser. Phase 19 added real XEX2 header/section parsing; the
-  embedded PE and imports remain stubbed. `--game` runs *small* ARM64
-  programs (hello-world works end-to-end).
+  load/store pairs, sysregs and a real import parser. Phases 19/20
+  added real XEX2 header/section parsing plus AES/LZX image decoding;
+  the embedded PowerPC PE and imports remain stubbed. `--game` runs
+  *small* ARM64 programs (hello-world works end-to-end).
 - [ ] Kernel syscalls are xHoly-assigned numbers, not the real Xbox
   XAM ABI — `kernel::xam` stubs resolved imports but nothing services
   real XAM calls. Scheduler is pre-emptive by instruction budget but
@@ -245,3 +261,17 @@ NEON/SIMD setzt ein lauffähiges Image voraus, und Pre-emption
 größer bzw. kosmetisch, solange das Guest-Frame schon im Preview
 ankommt. Ehrliche Grenze: auch danach booten keine Retail-Titel —
 der PowerPC-Befehlssatz fehlt weiterhin.
+
+## Empfhlung (OpenCode, 2026-11-23) — Bild-Dekodierung
+
+Phase 20 schließt die Decoder-Lücke: aus einem Retail-XEX2 wird jetzt
+ein echtes, dekomprimiertes Guest-Image statt eines rohen, verschlüsselten
+Blobs. Ich habe bewusst die Image-Dekodierung vor der GPU-Arbeit gemacht,
+weil ohne dekodiertes Bild jeder spätere Renderpfad nur ein synthetisches
+Bitmap zeigt. Begründung: AES/BASIC/LZX sind deterministisch und gegen
+NIST- sowie libmspack-Testvektoren prüfbar; die GPU-Entscheidung ist
+plattformabhängig und lässt sich sauber in einem eigenen Schritt mit
+reinen Entscheidungstests abhandeln. Ehrliche Grenze: der dekodierte
+PowerPC-PE wird nicht interpretiert und die SHA1-Blöcke werden nicht
+verifiziert — Retail-Titel booten weiterhin nicht; es schließt nur die
+Decoder-Lücke.

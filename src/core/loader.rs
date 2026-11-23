@@ -18,6 +18,7 @@
 
 pub mod game_image;
 pub mod game_runner;
+pub mod image_decode;
 pub mod iso_parser;
 pub mod xex_parser;
 
@@ -35,6 +36,8 @@ pub enum LoadError {
     Unrecognized(PathBuf),
     /// XEX header present but malformed.
     BadXex(PathBuf),
+    /// XEX image decode (AES/LZX) failed.
+    Decode(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -43,6 +46,7 @@ impl std::fmt::Display for LoadError {
             Self::Io(e) => write!(f, "io error: {e}"),
             Self::Unrecognized(p) => write!(f, "unrecognized game image: {}", p.display()),
             Self::BadXex(p) => write!(f, "malformed XEX header: {}", p.display()),
+            Self::Decode(e) => write!(f, "XEX image decode error: {e}"),
         }
     }
 }
@@ -242,7 +246,12 @@ pub fn image_from_bytes(path: &Path, data: &[u8]) -> Result<GameImage, LoadError
         let base = USER_BASE;
         let rva = hdr.entry_point.saturating_sub(hdr.image_base) as u64;
         title_id = xex_parser::format_title_id(&hdr.title_id);
-        (base, base + rva, data[hs..].to_vec())
+        // Phase 20: decrypt/decompress real XEX2 images (AES-CBC + BASIC
+        // or LZX). Legacy scaffold images have no file-format header and
+        // are returned verbatim by the decoder.
+        let image = image_decode::decode_xex_image(&hdr, data)
+            .map_err(|e| LoadError::Decode(e.to_string()))?;
+        (base, base + rva, image)
     } else {
         (USER_BASE, USER_BASE, data.to_vec())
     };
