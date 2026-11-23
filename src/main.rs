@@ -97,7 +97,7 @@ struct Args {
     #[arg(long)]
     fullscreen: bool,
 
-    /// GUI theme: dark | gold | light.
+    /// GUI theme: dark | gold | light (also trans/pride/pink).
     #[arg(long, value_name = "THEME")]
     theme: Option<String>,
 
@@ -185,7 +185,7 @@ fn main() {
     env_logger::init();
     let args = Args::parse();
 
-    // Easter egg: once-per-session gold start screen before any real
+    // Easter egg: once-per-session trans start screen before any real
     // initialization (GUI/game/headless). Debug builds get the minimal
     // text-only variant so `cargo run` stays quick.
     use xholy::easter_egg::{self, EasterEgg, EasterEggRequest};

@@ -92,7 +92,7 @@ fn render_to(
     use display::{fade, BG, BOLD, GOLD, RESET};
     let lines = display::render_frame(config, info, t);
     let f = fade(t);
-    // Fade via dim attribute: bright gold mid-way, darker at edges.
+    // Fade via dim attribute: bright trans blue mid-way, darker at edges.
     let intensity = if f < 0.5 { 2 } else { 1 }; // faint ↔ bold-ish
     for line in &lines {
         if line.trim().is_empty() {

@@ -89,22 +89,25 @@ pub enum GuiBackend {
 }
 
 /// Color theme for the GUI.
+///
+/// Every variant uses the pride palette from [`crate::theme`]; the
+/// legacy names (`dark`/`gold`/`light`) stay valid for CLI/config files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiTheme {
-    /// Dark background, gold accents (default — matches logo).
+    /// Deep blue-black surface with trans-flag accents (default).
     Dark,
-    /// Gold background, dark text.
+    /// Blue-black surface with pink-forward trans accents.
     Gold,
-    /// Light background.
+    /// Light surface with trans-flag accents and dark text.
     Light,
 }
 
 impl GuiTheme {
-    /// Parse a CLI string (`dark`|`gold`|`light`).
+    /// Parse a CLI string (`dark`|`gold`|`light`|`trans`|`pride`).
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
-            "dark" => Some(Self::Dark),
-            "gold" => Some(Self::Gold),
+            "dark" | "trans" | "pride" => Some(Self::Dark),
+            "gold" | "pink" => Some(Self::Gold),
             "light" => Some(Self::Light),
             _ => None,
         }
@@ -112,20 +115,22 @@ impl GuiTheme {
 
     /// Background RGB.
     pub fn bg(&self) -> (u8, u8, u8) {
-        match self {
-            Self::Dark => (0x1A, 0x1A, 0x1A),
-            Self::Gold => (0xFF, 0xD7, 0x00),
-            Self::Light => (0xF5, 0xF5, 0xF5),
-        }
+        use crate::theme::{BG, TRANS_WHITE};
+        let c = match self {
+            Self::Dark | Self::Gold => BG,
+            Self::Light => TRANS_WHITE,
+        };
+        (c[0], c[1], c[2])
     }
 
-    /// Foreground/accent RGB.
+    /// Foreground/accent RGB (trans blue for dark themes).
     pub fn fg(&self) -> (u8, u8, u8) {
-        match self {
-            Self::Dark => (0xFF, 0xD7, 0x00),
-            Self::Gold => (0x1A, 0x1A, 0x1A),
-            Self::Light => (0x1A, 0x1A, 0x1A),
-        }
+        use crate::theme::{TRANS_BLUE, TRANS_PINK};
+        let c = match self {
+            Self::Dark | Self::Light => TRANS_BLUE,
+            Self::Gold => TRANS_PINK,
+        };
+        (c[0], c[1], c[2])
     }
 }
 

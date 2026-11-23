@@ -86,6 +86,18 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   the windowed renderer still composites guest frames on the CPU.
 - [x] Config: `--fps-limit`, `--resolution`, `--fullscreen`,
   `--theme`, `--gpu-api`, `--frame-pacing`, `--no-vsync`
+- [x] **Phase 24 pride UI redesign** (`src/theme.rs`, `src/gui/…`) —
+  the primary accent is now the **transgender flag** (light blue
+  `#5BCEFA`, pink `#F5A9B8`, white), applied to the windowed toolbar,
+  sidebar selection, info panel, preview cards, settings overlay and
+  widgets. Each toolbar button carries a different LGBTQ+ flag palette
+  (rainbow / bisexual / non-binary / asexual / pansexual / genderqueer),
+  with LAUNCH using the trans flag. Cleaner layout: blue-black surfaces,
+  panel separators, flag stripes, drop shadows, hover/active button
+  states, and matching TUI + easter-egg + console-render colours. A
+  still render can be generated with `cargo run --example preview_pride_ui`.
+  **Honest limits:** palette is fixed (no user-defined themes yet); the
+  flag colours on buttons are decorative, not an accessibility signal.
 
 ### Native / other
 - [x] Scala/JVM + Scala.js runtime bridge skeleton (`scala/`, `build.sbt`)
@@ -350,3 +362,18 @@ Nächstes würde ich die TUI auf dieselbe `GuestSession` umstellen und
 den 160×120-FB auflösungsunabhängig machen. Ehrliche Grenze: Retail-Titel
 booten weiterhin nicht (NEON, Bitmask-Immediates, LDP/STP, Sysregs
 fehlen) — es schließt nur die Decoder-, Loop- und GPU-Lücke.
+
+## Empfhlung (OpenCode, 2026-11-23) — Pride-UI-Redesign
+
+Phase 24 ersetzt das alte Gold-Theme durch die Trans-Flagge als
+Hauptfarbe und gibt jedem Toolbar-Button eine andere LGBTQ+-Flagge;
+dazu kommen klarere Panels, Abstände, Schatten und Hover-Zustände.
+Begründung: die Farben sind in einem zentralen `theme`-Modul definiert,
+damit Windowed-UI, Preview, Widgets, TUI und Konsolen-Render identisch
+aussehen und die Änderung mit Farb-/Layout-Tests überprüfbar bleibt. Ich
+habe bewusst zuerst die Palette und dann die Compositor-Stellen
+umgestellt, statt Farben über die Dateien zu verstreuen. Als Nächstes
+würde ich echte Theme-Dateien (benutzerdefinierte Paletten) und
+Kontrastprüfung ergänzen. Ehrliche Grenze: Retail-Titel booten
+weiterhin nicht (NEON, Bitmask-Immediates, LDP/STP, Sysregs fehlen) —
+es schließt nur die UI-Lücke.

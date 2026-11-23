@@ -24,9 +24,9 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The bound texture is the CPU's R8 bit-bitmap (see
-    // core::gpu::bytes_to_bitmap): bit=1 → gold, bit=0 → dark.
+    // core::gpu::bytes_to_bitmap): bit=1 → trans blue, bit=0 → dark.
     let bit = textureSampleLevel(scene_tex, scene_samp, in.uv, 0.0).r;
-    let bg = vec3<f32>(0.10, 0.10, 0.10);   // #1a1a1a-ish
-    let fg = vec3<f32>(1.00, 0.84, 0.00);   // gold #FFD700
+    let bg = vec3<f32>(0.071, 0.086, 0.133); // #121622 deep blue-black
+    let fg = vec3<f32>(0.357, 0.808, 0.980); // trans blue #5BCEFA
     return vec4<f32>(mix(bg, fg, bit), 1.0);
 }

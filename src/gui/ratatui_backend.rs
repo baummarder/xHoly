@@ -274,12 +274,21 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-fn gold() -> Style {
-    Style::default().fg(Color::Rgb(0xFF, 0xD7, 0x00))
+/// Trans-flag light blue — the TUI's primary accent.
+fn accent() -> Style {
+    Style::default().fg(Color::Rgb(0x5B, 0xCE, 0xFA))
 }
 
-fn dim_gold() -> Style {
-    Style::default().fg(Color::Rgb(0x8A, 0x72, 0x00))
+/// Trans-flag pink — secondary labels and borders.
+fn muted_accent() -> Style {
+    Style::default().fg(Color::Rgb(0xF5, 0xA9, 0xB8))
+}
+
+/// Pride flag colors for the toolbar sections (rainbow accents).
+fn flag_style(index: usize) -> Style {
+    use crate::theme::RAINBOW;
+    let c = RAINBOW[index % RAINBOW.len()];
+    Style::default().fg(Color::Rgb(c[0], c[1], c[2]))
 }
 
 fn draw(f: &mut Frame, state: &GuiState, config: &GuiConfig, view: View, scroll: u16) {
@@ -310,10 +319,11 @@ fn draw(f: &mut Frame, state: &GuiState, config: &GuiConfig, view: View, scroll:
         state.gpu_usage * 100.0,
     );
     let toolbar = Paragraph::new(Line::from(vec![
-        Span::styled("xHoly", gold().add_modifier(Modifier::BOLD)),
+        Span::styled("xHoly", accent().add_modifier(Modifier::BOLD)),
+        Span::styled(" ◆ ", flag_style(0)),
         Span::styled(stats, Style::default().fg(Color::DarkGray)),
     ]))
-    .style(Style::default().bg(Color::Rgb(0x1A, 0x1A, 0x1A)));
+    .style(Style::default().bg(Color::Rgb(0x12, 0x16, 0x22)));
     f.render_widget(toolbar, chunks[0]);
 
     match view {
@@ -351,7 +361,7 @@ fn draw_library(f: &mut Frame, state: &GuiState, area: Rect, scroll: u16) {
         .enumerate()
         .map(|(i, g)| {
             let style = if i == state.selected_game {
-                gold().add_modifier(Modifier::BOLD)
+                accent().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -362,7 +372,7 @@ fn draw_library(f: &mut Frame, state: &GuiState, area: Rect, scroll: u16) {
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<28}", g.title), style),
-                Span::styled(format!("{}{}", g.region, discs), dim_gold()),
+                Span::styled(format!("{}{}", g.region, discs), muted_accent()),
             ]))
         })
         .collect();
@@ -371,10 +381,10 @@ fn draw_library(f: &mut Frame, state: &GuiState, area: Rect, scroll: u16) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(dim_gold())
-                .title(Span::styled(" Game Library ", gold())),
+                .border_style(muted_accent())
+                .title(Span::styled(" Game Library ", accent())),
         )
-        .highlight_style(gold().bg(Color::Rgb(0x33, 0x33, 0x33)));
+        .highlight_style(accent().bg(Color::Rgb(0x33, 0x33, 0x33)));
 
     let mut list_state =
         ratatui::widgets::ListState::default().with_selected(Some(state.selected_game));
@@ -392,8 +402,8 @@ fn draw_library(f: &mut Frame, state: &GuiState, area: Rect, scroll: u16) {
 fn draw_detail(f: &mut Frame, state: &GuiState, area: Rect, config: &GuiConfig) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(dim_gold())
-        .title(Span::styled(" Game Detail ", gold()));
+        .border_style(muted_accent())
+        .title(Span::styled(" Game Detail ", accent()));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -408,7 +418,10 @@ fn draw_detail(f: &mut Frame, state: &GuiState, area: Rect, config: &GuiConfig) 
     };
 
     let lines = vec![
-        Line::from(Span::styled(&g.title, gold().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            &g.title,
+            accent().add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(format!("Path:    {}", g.path.display())),
         Line::from(format!("Region:  {}", g.region)),
@@ -440,7 +453,7 @@ fn draw_detail(f: &mut Frame, state: &GuiState, area: Rect, config: &GuiConfig) 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             " Console ",
-            gold().add_modifier(Modifier::BOLD),
+            accent().add_modifier(Modifier::BOLD),
         )));
         for l in state.console_log.iter().rev().take(12).rev() {
             lines.push(Line::from(Span::styled(
@@ -457,7 +470,7 @@ fn draw_menu(f: &mut Frame, area: Rect) {
     let lines = vec![
         Line::from(Span::styled(
             " xHoly Menu ",
-            gold().add_modifier(Modifier::BOLD),
+            accent().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(" R  resume emulation"),
@@ -466,15 +479,15 @@ fn draw_menu(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "Phase 4: library/detail/TUI active. wgpu windowed shell pending.",
-            dim_gold(),
+            muted_accent(),
         )),
     ];
     f.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(dim_gold())
-                .title(Span::styled(" Menu ", gold())),
+                .border_style(muted_accent())
+                .title(Span::styled(" Menu ", accent())),
         ),
         area,
     );
@@ -484,7 +497,7 @@ fn draw_settings(f: &mut Frame, area: Rect, config: &GuiConfig) {
     let lines = vec![
         Line::from(Span::styled(
             " Settings ",
-            gold().add_modifier(Modifier::BOLD),
+            accent().add_modifier(Modifier::BOLD),
         )),
         Line::from(format!(" Backend:        {:?}", config.backend)),
         Line::from(format!(
@@ -500,15 +513,15 @@ fn draw_settings(f: &mut Frame, area: Rect, config: &GuiConfig) {
         Line::from(""),
         Line::from(Span::styled(
             "(read-only in TUI; edit ~/.config/xholy/gui.toml)",
-            dim_gold(),
+            muted_accent(),
         )),
     ];
     f.render_widget(
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(dim_gold())
-                .title(Span::styled(" Settings ", gold())),
+                .border_style(muted_accent())
+                .title(Span::styled(" Settings ", accent())),
         ),
         area,
     );

@@ -9,7 +9,7 @@
 //!
 //! The CPU's console output is expanded into an R8 bitmap texture (each
 //! byte → 8 horizontal pixels, each bit → one row) which the WGSL shader
-//! displays as gold-on-dark — a visual echo of "Hello, xHoly!".
+//! displays in trans-flag blue on dark — a visual echo of "Hello, xHoly!".
 
 pub mod shader;
 #[cfg(not(target_arch = "wasm32"))]
@@ -81,15 +81,15 @@ pub const SHADER_WGSL: &str = include_str!("../../../shaders/render.wgsl");
 pub mod software {
     use super::{bytes_to_bitmap, GpuFrame};
 
-    /// Render `frame.text` into an RGBA8 buffer (gold-on-dark).
+    /// Render `frame.text` into an RGBA8 buffer (trans blue on dark).
     pub fn render_frame(frame: &GpuFrame) -> Vec<u8> {
         let (w, h, bits) = bytes_to_bitmap(&frame.text);
         let mut out = Vec::with_capacity((w * h * 4) as usize);
         for &b in &bits {
             if b > 0 {
-                out.extend_from_slice(&[255, 214, 0, 255]); // gold #FFD700
+                out.extend_from_slice(&[0x5B, 0xCE, 0xFA, 255]); // trans blue
             } else {
-                out.extend_from_slice(&[26, 26, 26, 255]); // #1a1a1a
+                out.extend_from_slice(&[0x12, 0x16, 0x22, 255]); // deep blue-black
             }
         }
         let _ = h;
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(tex[0], 0);
     }
 
-    /// Software rasterizer produces gold/dark pixels deterministically.
+    /// Software rasterizer produces trans-blue/dark pixels deterministically.
     #[test]
     fn software_render_pixels() {
         let px = software::render_frame(&GpuFrame {
@@ -181,10 +181,10 @@ mod tests {
             ..Default::default()
         });
         // First pixel (column 0 = bit0 of 'H' = 0) → dark.
-        assert_eq!(&px[0..4], &[26, 26, 26, 255]);
-        // Column 3 → gold #FFD700.
+        assert_eq!(&px[0..4], &[0x12, 0x16, 0x22, 255]);
+        // Column 3 → trans blue #5BCEFA.
         let i = (3 * 4) as usize;
-        assert_eq!(&px[i..i + 4], &[255, 214, 0, 255]);
+        assert_eq!(&px[i..i + 4], &[0x5B, 0xCE, 0xFA, 255]);
     }
 
     /// DXBC-magic shader blob translates to WGSL.
@@ -198,19 +198,19 @@ mod tests {
         assert!(shader::translate_dx12_to_wgsl(b"NOPE").is_err());
     }
 
-    /// End-to-end: CPU Hello World → GPU/software render → gold pixels.
+    /// End-to-end: CPU Hello World → GPU/software render → trans pixels.
     #[test]
     fn render_helloworld() {
         let cpu = arm64::run_hello_world();
         let px = render_text(&cpu.output, 256, 16).expect("render");
         assert_eq!(px.len(), (256 * 16 * 4) as usize);
-        // 'H' bit 3 → some gold pixel must exist in the frame.
-        let gold = px
+        // 'H' bit 3 → some trans-blue pixel must exist in the frame.
+        let trans = px
             .as_chunks::<4>()
             .0
             .iter()
-            .any(|p| p[0] == 255 && p[1] == 214 && p[2] == 0);
-        assert!(gold, "expected gold pixels in rendered frame");
+            .any(|p| p[0] == 0x5B && p[1] == 0xCE && p[2] == 0xFA);
+        assert!(trans, "expected trans-blue pixels in rendered frame");
     }
 
     /// wgpu device/pipeline creation (skips gracefully without adapter).

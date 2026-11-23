@@ -5,7 +5,7 @@ use crate::gui::GameListItem;
 
 /// Render a game preview at `(width, height)` RGBA8.
 ///
-/// Uses the Phase-4 software preview card (gold title text on dark)
+/// Uses the Phase-4 software preview card (trans-flag accents on dark)
 /// scaled nearest-neighbor to the requested size. A hardware path can
 /// be added later by routing through `core::gpu::render_text`.
 pub fn render_game_preview(item: &GameListItem, width: u32, height: u32) -> Vec<u8> {

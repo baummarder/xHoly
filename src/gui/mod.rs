@@ -4,7 +4,9 @@
 //! - [`ratatui_backend`]: terminal UI (always available, headless-safe)
 //! - [`wgpu_backend`]: GPU-accelerated preview via the Phase-2 renderer
 //!
-//! Theme: gold `#FFD700` accents on dark `#1a1a1a`, matching the logo.
+//! Theme: trans-flag accents (`#5BCEFA` / `#F5A9B8` / white) on a deep
+//! blue-black surface; toolbar buttons carry other LGBTQ+ flag colours
+//! (see [`crate::theme`]).
 
 pub mod config;
 pub mod frame_pacing;

@@ -1,6 +1,6 @@
 //! Easter egg — Phase 10 bonus.
 //!
-//! A short (~2.5 s), gold-on-dark start screen ("Oh shit here we go
+//! A short (~2.5 s), trans-blue-on-dark start screen ("Oh shit here we go
 //! again!") shown once per session before the real app initializes.
 //!
 //! Scope (honest): console/ANSI rendering only — no GUI window, no

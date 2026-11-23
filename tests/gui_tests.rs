@@ -4,6 +4,7 @@ use xholy::gui::windowed::input::{GuiAction, InputState};
 use xholy::gui::windowed::state::WindowedGuiState;
 use xholy::gui::windowed::ui;
 use xholy::gui::{GameListItem, GpuApiPreference, GuiBackend, GuiConfig, GuiTheme};
+use xholy::theme;
 
 fn sample_game(title: &str) -> GameListItem {
     GameListItem {
@@ -74,11 +75,11 @@ fn settings_panel_renders_when_open() {
         ..Default::default()
     };
     let (fb, _) = ui::composite(&s, 800, 500);
-    // Panel interior should be PANEL color #262626 at center.
+    // Panel interior should use the new blue-black panel surface.
     let cx = 400usize;
     let cy = 250usize;
     let i = (cy * 800 + cx) * 4;
-    assert_eq!(&fb[i..i + 3], &[0x26, 0x26, 0x26]);
+    assert_eq!(&fb[i..i + 3], &theme::PANEL[..3]);
 }
 
 #[test]
@@ -89,9 +90,10 @@ fn software_warning_banner_shows() {
         ..Default::default()
     };
     let (fb, _) = ui::composite(&s, 800, 500);
-    // Banner row (just under the 34px toolbar) should be dark red.
+    // Banner row (just under the toolbar) is a bisexual-pink tint.
     let i = (40 * 800 + 400) * 4;
-    assert_eq!(&fb[i..i + 3], &[0x4A, 0x1A, 0x1A]);
+    let expected = theme::mix(theme::PANEL, theme::BISEXUAL[0], 0.35);
+    assert_eq!(&fb[i..i + 3], &expected[..3]);
 }
 
 #[test]

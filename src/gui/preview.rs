@@ -4,19 +4,20 @@
 
 use super::GameListItem;
 use crate::core::gpu::bytes_to_bitmap;
+use crate::theme::{self, Rgba};
 
 /// Default preview resolution.
 pub const PREVIEW_WIDTH: u32 = 320;
 pub const PREVIEW_HEIGHT: u32 = 180;
 
-const BG: [u8; 4] = [0x1A, 0x1A, 0x1A, 0xFF];
-const GOLD: [u8; 4] = [0xFF, 0xD7, 0x00, 0xFF];
-const DIM_GOLD: [u8; 4] = [0x8A, 0x72, 0x00, 0xFF];
+const BG: Rgba = theme::INSET;
+const ACCENT: Rgba = theme::TRANS_BLUE;
+const DIM_ACCENT: Rgba = theme::TRANS_PINK;
 
 /// Render a preview frame (RGBA8, `PREVIEW_WIDTH`×`PREVIEW_HEIGHT`).
 ///
-/// Layout: dark background, gold accent bar on top, centered title,
-/// region/disc-count footer.
+/// Layout: dark inset background, trans-flag accent bar on top,
+/// centered white title with pink shadow, region/disc-count footer.
 pub fn render_preview(item: &GameListItem) -> Vec<u8> {
     let (w, h) = (PREVIEW_WIDTH as usize, PREVIEW_HEIGHT as usize);
     let mut px = vec![0u8; w * h * 4];
@@ -24,11 +25,12 @@ pub fn render_preview(item: &GameListItem) -> Vec<u8> {
         p.copy_from_slice(&BG);
     }
 
-    // Gold accent bar at top
-    for y in 0..4usize {
-        for x in 0..w {
+    // Trans flag accent bar at top (five vertical stripes).
+    for x in 0..w {
+        let stripe = theme::stripe_at(&theme::TRANS_FLAG, x as f32 / w as f32);
+        for y in 0..5usize {
             let i = (y * w + x) * 4;
-            px[i..i + 4].copy_from_slice(&GOLD);
+            px[i..i + 4].copy_from_slice(&stripe);
         }
     }
 
@@ -40,6 +42,19 @@ pub fn render_preview(item: &GameListItem) -> Vec<u8> {
     let text_h = th as usize * scale;
     let ox = w.saturating_sub(text_w) / 2;
     let oy = (h / 2).saturating_sub(text_h / 2 + 4);
+    // Pink drop-shadow then white face.
+    blit_r8(
+        &mut px,
+        w,
+        h,
+        &bits,
+        tw as usize,
+        th as usize,
+        scale,
+        ox + 2,
+        oy + 2,
+        &DIM_ACCENT,
+    );
     blit_r8(
         &mut px,
         w,
@@ -50,7 +65,7 @@ pub fn render_preview(item: &GameListItem) -> Vec<u8> {
         scale,
         ox,
         oy,
-        &GOLD,
+        &theme::TRANS_WHITE,
     );
 
     // Footer metadata
@@ -74,7 +89,7 @@ pub fn render_preview(item: &GameListItem) -> Vec<u8> {
         scale,
         meta_x,
         meta_y,
-        &DIM_GOLD,
+        &ACCENT,
     );
 
     px
@@ -139,15 +154,13 @@ mod tests {
     }
 
     #[test]
-    fn preview_has_gold_pixels() {
+    fn preview_has_trans_flag_pixels() {
         let px = render_preview(&sample_item());
-        let gold = px
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|c| c[..3] == GOLD[..3])
-            .count();
-        assert!(gold > 100, "expected gold pixels, got {gold}");
+        let colors = px.as_chunks::<4>().0;
+        for flag_color in theme::TRANS_FLAG {
+            let count = colors.iter().filter(|c| c[..3] == flag_color[..3]).count();
+            assert!(count > 3, "expected pixels of {flag_color:?}, got {count}");
+        }
     }
 
     #[test]
@@ -156,6 +169,6 @@ mod tests {
         let i = ((PREVIEW_HEIGHT as usize - 1) * PREVIEW_WIDTH as usize + PREVIEW_WIDTH as usize
             - 1)
             * 4;
-        assert_eq!(&px[i..i + 3], &[0x1A, 0x1A, 0x1A]);
+        assert_eq!(&px[i..i + 3], &BG[..3]);
     }
 }

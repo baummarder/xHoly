@@ -27,6 +27,7 @@ pub mod save;
 pub mod shader_cache;
 pub mod storage;
 pub mod telemetry;
+pub mod theme;
 pub mod utils;
 
 use std::time::Duration;

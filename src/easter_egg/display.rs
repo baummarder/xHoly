@@ -1,7 +1,7 @@
 //! Easter egg rendering — ANSI console output.
 //!
-//! Gold (#FFD700 → ANSI 208/220) on dark (#1a1a1a). Frames are plain
-//! text lines; [`render_frame`] is pure and unit-testable.
+//! Trans-flag blue (#5BCEFA → ANSI 111) on deep blue-black. Frames are
+//! plain text lines; [`render_frame`] is pure and unit-testable.
 
 use super::config::EasterEggConfig;
 
@@ -14,10 +14,12 @@ pub const LOGO: &str = r#"
       xHoly — research scaffold
 "#;
 
-/// ANSI gold foreground.
-pub const GOLD: &str = "\x1b[38;5;220m";
-/// ANSI dark background.
-pub const BG: &str = "\x1b[48;5;236m";
+/// ANSI trans-flag blue foreground (legacy name kept for API compatibility).
+pub const GOLD: &str = "\x1b[38;5;111m";
+/// ANSI trans-flag pink foreground.
+pub const PINK: &str = "\x1b[38;5;213m";
+/// ANSI deep blue-black background.
+pub const BG: &str = "\x1b[48;5;233m";
 /// Reset.
 pub const RESET: &str = "\x1b[0m";
 /// Bold.

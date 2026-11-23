@@ -124,15 +124,15 @@ fn wgsl_to_glsl_stub(wgsl: &str) -> String {
 pub mod fallback {
     use crate::core::gpu::{bytes_to_bitmap, GpuFrame};
 
-    /// Render `frame.text` into RGBA8 (gold-on-dark), unscaled.
+    /// Render `frame.text` into RGBA8 (trans blue on dark), unscaled.
     pub fn render_software(frame: &GpuFrame) -> Vec<u8> {
         let (w, _h, bits) = bytes_to_bitmap(&frame.text);
         let mut out = Vec::with_capacity((w * 8 * 4) as usize);
         for &b in &bits {
             if b > 0 {
-                out.extend_from_slice(&[255, 214, 0, 255]);
+                out.extend_from_slice(&[0x5B, 0xCE, 0xFA, 255]);
             } else {
-                out.extend_from_slice(&[26, 26, 26, 255]);
+                out.extend_from_slice(&[0x12, 0x16, 0x22, 255]);
             }
         }
         out

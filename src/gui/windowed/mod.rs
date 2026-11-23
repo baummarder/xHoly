@@ -666,9 +666,9 @@ mod tests {
         let (fb, layout) = ui::composite(&state, 640, 400);
         assert_eq!(fb.len(), 640 * 400 * 4);
         assert!(!layout.buttons.is_empty());
-        // Sidebar pixel should be panel color #262626.
+        // Sidebar pixel should use the new blue-black panel surface.
         let i = (100 * 640 + 10) * 4;
-        assert_eq!(&fb[i..i + 3], &[0x26, 0x26, 0x26]);
+        assert_eq!(&fb[i..i + 3], &crate::theme::PANEL[..3]);
     }
 
     #[test]

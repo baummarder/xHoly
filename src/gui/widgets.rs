@@ -276,9 +276,13 @@ impl WidgetTree {
                         rect.w,
                         rect.h,
                         if *accent {
-                            [0x3A, 0x2E, 0x00, 0xFF]
+                            crate::theme::mix(
+                                crate::theme::PANEL_ALT,
+                                crate::theme::TRANS_BLUE,
+                                0.30,
+                            )
                         } else {
-                            [0x26, 0x26, 0x26, 0xFF]
+                            crate::theme::PANEL
                         },
                     );
                     if *accent {
@@ -289,7 +293,7 @@ impl WidgetTree {
                             rect.y,
                             rect.w,
                             rect.h,
-                            [0xFF, 0xD7, 0x00, 0xFF],
+                            crate::theme::TRANS_BLUE,
                         );
                     }
                 }
@@ -305,7 +309,7 @@ impl WidgetTree {
                     pos.0,
                     pos.1,
                     text,
-                    [0xE8, 0xE8, 0xE8, 0xFF],
+                    crate::theme::TEXT,
                     *scale,
                 ),
                 Widget::Slider { rect, value, .. } => draw_slider(fb, fb_w, fb_h, rect, *value),
@@ -322,27 +326,20 @@ fn draw_button(
     label: &str,
     state: WidgetState,
 ) {
+    use crate::theme;
     let (bg, border, fg) = match state {
-        WidgetState::Normal => (
-            [0x30, 0x30, 0x30, 0xFF],
-            [0xFF, 0xD7, 0x00, 0xFF],
-            [0xFF, 0xD7, 0x00, 0xFF],
-        ),
+        WidgetState::Normal => (theme::PANEL_ALT, theme::TRANS_BLUE, theme::TRANS_WHITE),
         WidgetState::Hover => (
-            [0x3A, 0x34, 0x14, 0xFF],
-            [0xFF, 0xE7, 0x40, 0xFF],
-            [0xFF, 0xE7, 0x40, 0xFF],
+            theme::shade(theme::PANEL_ALT, 1.35),
+            theme::TRANS_PINK,
+            theme::TRANS_WHITE,
         ),
         WidgetState::Pressed => (
-            [0x4A, 0x3E, 0x10, 0xFF],
-            [0xFF, 0xF0, 0x60, 0xFF],
-            [0xFF, 0xF0, 0x60, 0xFF],
+            theme::mix(theme::PANEL_ALT, theme::TRANS_PINK, 0.35),
+            theme::TRANS_WHITE,
+            theme::TRANS_WHITE,
         ),
-        WidgetState::Disabled => (
-            [0x22, 0x22, 0x22, 0xFF],
-            [0x55, 0x55, 0x55, 0xFF],
-            [0x66, 0x66, 0x66, 0xFF],
-        ),
+        WidgetState::Disabled => (theme::INSET, theme::DIM, theme::MUTED),
     };
     crate::gui::windowed::ui::fill_rect_pub(fb, fb_w, rect.x, rect.y, rect.w, rect.h, bg);
     crate::gui::windowed::ui::stroke_rect_pub(fb, fb_w, rect.x, rect.y, rect.w, rect.h, border);
@@ -367,7 +364,7 @@ fn draw_slider(fb: &mut Framebuffer, fb_w: u32, fb_h: u32, rect: &Rect, value: f
         rect.y,
         rect.w,
         rect.h,
-        [0x22, 0x22, 0x22, 0xFF],
+        crate::theme::INSET,
     );
     let fill_w = (rect.w as f32 * value.clamp(0.0, 1.0)) as u32;
     crate::gui::windowed::ui::fill_rect_pub(
@@ -377,7 +374,7 @@ fn draw_slider(fb: &mut Framebuffer, fb_w: u32, fb_h: u32, rect: &Rect, value: f
         rect.y,
         fill_w,
         rect.h,
-        [0xFF, 0xD7, 0x00, 0xFF],
+        crate::theme::trans_gradient(value.clamp(0.0, 1.0)),
     );
     crate::gui::windowed::ui::stroke_rect_pub(
         fb,
@@ -386,7 +383,7 @@ fn draw_slider(fb: &mut Framebuffer, fb_w: u32, fb_h: u32, rect: &Rect, value: f
         rect.y,
         rect.w,
         rect.h,
-        [0x55, 0x55, 0x55, 0xFF],
+        crate::theme::DIM,
     );
     let _ = fb_h;
 }
