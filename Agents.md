@@ -8,6 +8,7 @@ This document records AI agents that contribute to xHoly and sets the commit-att
 |---|---|---|
 | Devin AI Integration (`devin-ai-integration[bot]`, `158243242+devin-ai-integration[bot]@users.noreply.github.com`) | AI software engineering agent | May implement assigned changes and contribute research, tests, or reviews. |
 | GitHub Copilot | AI coding assistant | May implement changes, debug issues, and contribute documentation or tests. |
+| OpenCode (`opencode-agent[bot]`, `opencode-agent[bot]@users.noreply.github.com`) | AI coding assistant (OpenCode agent) | May implement assigned changes, debug issues, and contribute documentation or tests; commits carry a `Co-authored-by:` trailer. |
 
 These are role descriptions, not a claim that every agent contributed to every change. Record only agents that actually contributed to a given commit.
 
