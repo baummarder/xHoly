@@ -7,6 +7,7 @@ pub mod gpu;
 pub mod kernel;
 pub mod loader;
 pub mod memory;
+pub mod ppc;
 pub mod shader;
 
 pub use emulation::{EmulationCore, FrameResult};

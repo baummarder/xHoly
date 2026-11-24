@@ -1,6 +1,7 @@
 //! Windowed GUI state — Phase 5.
 
 use crate::core::execution::GuestFrame;
+use crate::gui::scarletx::BootProgress;
 use crate::gui::{GameListItem, GuiTheme};
 use std::time::SystemTime;
 
@@ -68,6 +69,8 @@ pub struct WindowedGuiState {
     /// Console output captured from game launches (loader/kernel/game
     /// stdout lines, newest last, capped at 200).
     pub console_log: Vec<String>,
+    /// Retail-boot progress shown by the ScarletX shell (Phase 24).
+    pub boot_progress: Option<BootProgress>,
 }
 
 impl Default for WindowedGuiState {
@@ -97,6 +100,7 @@ impl Default for WindowedGuiState {
             mouse_down: false,
             guest_frame: None,
             console_log: Vec::new(),
+            boot_progress: None,
         }
     }
 }

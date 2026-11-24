@@ -23,6 +23,7 @@ pub mod preview;
 pub mod ratatui_backend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod renderer;
+pub mod scarletx;
 pub mod settings;
 pub mod shader_cache;
 #[cfg(not(target_arch = "wasm32"))]

@@ -251,6 +251,25 @@ working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
   exports, favicon
 - [x] Docs: README, INSTALL, CONTRIBUTING, CITATION.cff, whitepaper,
   GPU-API + framerate docs, MISSING.md audit
+- [x] **Phase 24 ScarletX foundations** — four new testable subsystems:
+  `core::ppc` decodes/executes a real big-endian PowerPC integer/branch
+  subset (addi/addis/ori/lwz/stw/add/or/cmp/mfspr/mtspr/b/bl/bc/blr/sc)
+  with a bootloader and 128-bit pixel SIMD helpers; `kernel::pte` models
+  encoded PTEs, page attributes, translate + accessed/dirty bits and
+  page faults; `kernel::xam_abi` provides **verified Xbox 360 XAM
+  ordinals** from Xenia (`XamInputGetState=0x191`,
+  `XamUserGetSigninState=0x210`, ...) with a dispatch table;
+  `gpu::swapchain` adds depth-stencil state conversion, 16-byte indirect
+  draw packing and a stream-out buffer abstraction over the Phase-21
+  wgpu backend; `gpu::shader_vertex` translates a real HLSL vertex
+  subset to WGSL; `gui::scarletx` adds a responsive layout with
+  boot-progress and renderer-feedback views, wired into the windowed
+  compositor as a boot bar.
+  **Honest limits:** this is a *foundation*, not retail boot. No FP/VMX
+  instruction decoder, no retail PE relocation, XAM services are
+  modelled (not real profiles/UI/storage), wgpu has no true stream-out,
+  and no guest draw calls are translated end-to-end yet. README's
+  "Phase 23" line is a roadmap target, not shipped functionality.
 - [x] **Icon + README status + UI polish** — `assets/icon_xholy.svg`
   (256×256 gold X in a gold-on-black cross frame) and a stdlib-only
   generator (`tools/render_icon_xholy.py`) that rasterises the same
@@ -397,3 +416,17 @@ Als Nächstes würde ich das Icon auch in die Fenster-/Tray-Darstellung
 verdrahten. Ehrliche Grenze: Retail-Titel booten weiterhin nicht (NEON,
 Bitmask-Immediates, LDP/STP, Sysregs fehlen) — es schließt nur die
 Icon-/Doku-/UI-Lücke.
+
+## Empfhlung (OpenCode, 2026-11-24) — ScarletX Phase 24
+
+Phase 24 legt echte Fundamente statt Etiketten: PowerPC-Decoder, PTE-
+Memory-Layer, verifizierte XAM-Ordnalszahlen, Depth-Stencil/Indirect-
+Draw-Zustand und ein responsives ScarletX-Layout mit Boot-Anzeige.
+Begründung: die README behauptete Phase 23, ohne dass der Code diese
+Komponenten enthielt — ich habe zuerst die minimal testbaren Kerne
+gebaut (echte Opcodes, echte Ordinals aus Xenia, echte PTE-Bits), statt
+einen „fertigen Retail-Boot" zu behaupten. Als Nächstes würde ich den
+PowerPC-Decoder um FP/VMX erweitern und den Guest-Draw-Pfad mit dem
+neuen Vertex-Translator und dem Indirect-Draw-Puffer verbinden.
+Ehrliche Grenze: Retail-Titel booten weiterhin nicht — es schließt nur
+die Decoder-, ABI-, Render-State- und UI-Grundlage.

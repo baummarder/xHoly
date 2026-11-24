@@ -23,9 +23,11 @@ pub mod console;
 pub mod interrupt;
 pub mod memory;
 pub mod mmio;
+pub mod pte;
 pub mod scheduler;
 pub mod syscall;
 pub mod xam;
+pub mod xam_abi;
 
 pub use console::KernelConsole;
 pub use interrupt::Gic;

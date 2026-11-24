@@ -7,6 +7,7 @@
 
 use super::preview::render_game_preview;
 use super::state::WindowedGuiState;
+use crate::gui::scarletx::BootStage;
 use crate::gui::GameListItem;
 use crate::theme::{self, Rgba};
 
@@ -141,6 +142,21 @@ pub fn composite(state: &WindowedGuiState, width: u32, height: u32) -> (Framebuf
         h: prev_h,
     };
     render_preview_area(&mut fb, w as u32, h as u32, state, &layout.preview);
+
+    // Retail-boot progress bar over the preview (Phase 24).
+    if let Some(boot) = &state.boot_progress {
+        let bar_x = prev_x + 10;
+        let bar_y = prev_y + 8;
+        let bar_w = prev_w.saturating_sub(20);
+        fill_rect(&mut fb, w as u32, bar_x, bar_y, bar_w, 6, PANEL_ALT);
+        let done = bar_w * boot.percent as u32 / 100;
+        let color = if boot.stage == BootStage::Failed {
+            RED
+        } else {
+            ACCENT
+        };
+        fill_rect(&mut fb, w as u32, bar_x, bar_y, done, 6, color);
+    }
 
     // Fallback-renderer warning banner (under the toolbar).
     if !state.software_message.is_empty() {
