@@ -1,41 +1,61 @@
-//! Software UI compositor for the windowed GUI.
+//! Software UI compositor for the windowed GUI (1080p layout).
 //!
-//! Draws the sidebar (game library), toolbar (transport buttons), info
-//! panel (FPS/CPU/GPU/RAM) and preview area into an RGBA8 framebuffer.
-//! Text uses a built-in 5×7 bitmap font — deterministic and dependency-
-//! free, consistent with the Phase-2 software rasterizer approach.
+//! Structure follows a launcher-style design: a dark top bar with view tabs,
+//! a header row with title and subtitle, the active view as content, and a
+//! footer with the transport controls. Accents use the trans flag; each
+//! action button carries its own flag palette. Only real emulator state is
+//! shown; performance values appear only while an emulation is running.
 
-use super::preview::render_game_preview;
-use super::state::{GuiView, WindowedGuiState};
-use crate::gui::scarletx::BootStage;
+use super::preview::{render_game_preview, scale_rgba};
+use super::state::{GuiView, LogFilter, WindowedGuiState};
+use crate::gui::thumbnails;
 use crate::gui::GameListItem;
 use crate::theme::{self, Rgba};
 
 /// Framebuffer pixel = RGBA8.
 pub type Framebuffer = Vec<u8>;
 
-// Pride palette (Phase 24): the trans flag is the primary accent.
 const BG: Rgba = theme::BG;
+const BAR: Rgba = theme::INSET;
 const PANEL: Rgba = theme::PANEL;
-const PANEL_ALT: Rgba = theme::PANEL_ALT;
-const ACCENT: Rgba = theme::TRANS_BLUE;
-const DIM_ACCENT: Rgba = theme::DIM;
+const CARD: Rgba = theme::PANEL_ALT;
 const TEXT: Rgba = theme::TEXT;
-const GRAY: Rgba = theme::MUTED;
-const RED: Rgba = theme::RAINBOW[0]; // pride red = "stop / active"
-const GREEN: Rgba = theme::RAINBOW[3]; // pride green = "running / ok"
+const MUTED: Rgba = theme::MUTED;
+const DIM: Rgba = theme::DIM;
+const ACCENT: Rgba = theme::TRANS_BLUE;
+const PINK: Rgba = theme::TRANS_PINK;
+const WHITE: Rgba = theme::TRANS_WHITE;
+const RED: Rgba = theme::RAINBOW[0];
+const YELLOW: Rgba = theme::RAINBOW[2];
+
+/// Top tab bar height (1080p).
+pub const TOP_H: u32 = 48;
+/// Header row (title + subtitle) height.
+pub const HEAD_H: u32 = 92;
+/// Footer with transport controls.
+pub const FOOT_H: u32 = 116;
+const MARGIN: u32 = 48;
+const TAB_X: u32 = 200;
+const BUTTON_H: u32 = 56;
+const GAP: u32 = 12;
 
 /// Layout rectangles (in framebuffer pixels) for hit-testing.
 #[derive(Debug, Clone, Default)]
 pub struct UiLayout {
-    /// Top navigation rects paired with their view labels.
+    /// View tabs paired with their labels.
     pub nav: Vec<(Rect, &'static str)>,
-    /// Toolbar button rects paired with their labels.
+    /// Transport buttons paired with their labels.
     pub buttons: Vec<(Rect, &'static str)>,
-    /// Sidebar game-row rects paired with game indices.
+    /// Game cards (home view) paired with game indices.
     pub rows: Vec<(Rect, usize)>,
+    /// Kept for compatibility; the home view uses `rows`.
+    pub recent: Vec<(Rect, usize)>,
     /// Cover-grid cells paired with game indices.
     pub covers: Vec<(Rect, usize)>,
+    /// Log filter chips paired with their labels.
+    pub filters: Vec<(Rect, &'static str)>,
+    /// Buttons of the emulation overlay.
+    pub menu: Vec<(Rect, &'static str)>,
     /// Bounds of the preview area.
     pub preview: Rect,
 }
@@ -56,721 +76,951 @@ impl Rect {
     }
 }
 
-/// Composite a full GUI frame: preview + sidebar + toolbar + info panel.
+/// Composite a full GUI frame.
 pub fn composite(state: &WindowedGuiState, width: u32, height: u32) -> (Framebuffer, UiLayout) {
-    let (w, h) = (width as usize, height as usize);
-    let mut fb = vec![0u8; w * h * 4];
-    for p in fb.as_chunks_mut::<4>().0 {
-        p.copy_from_slice(&BG);
+    let w = width.max(1);
+    let h = height.max(1);
+    let mut fb = vec![0u8; w as usize * h as usize * 4];
+    for px in fb.as_chunks_mut::<4>().0 {
+        *px = BG;
     }
-
     let mut layout = UiLayout::default();
 
-    let toolbar_h = 34u32;
-    // Adaptive panel widths: never exceed ~30% of the framebuffer each,
-    // so tiny windows/headless test sizes still lay out correctly.
-    let sidebar_w = 230u32.min(w as u32 / 4).max(80);
-    let info_w = 190u32.min(w as u32 / 4).max(80);
-
-    // Toolbar — trans flag stripe across the top edge.
-    fill_rect(&mut fb, w as u32, 0, 0, w as u32, toolbar_h, PANEL);
-    draw_flag_bar(
-        &mut fb,
-        w as u32,
-        0,
-        0,
-        w as u32,
-        3,
-        &theme::TRANS_FLAG,
-        true,
-    );
-    // Soft pink drop-shadow keeps the wordmark legible on any surface.
-    draw_text(
-        &mut fb,
-        w as u32,
-        h as u32,
-        13,
-        11,
-        "xHOLY",
-        theme::TRANS_PINK,
-        2,
-    );
-    draw_text(
-        &mut fb,
-        w as u32,
-        h as u32,
-        12,
-        10,
-        "xHOLY",
-        theme::TRANS_WHITE,
-        2,
-    );
-    layout.buttons = render_toolbar(&mut fb, w as u32, state, toolbar_h);
-    layout.nav = render_navigation(&mut fb, w as u32, state, toolbar_h);
-
-    // Sidebar background + game list
-    let list_top = toolbar_h;
-    let list_bottom = h as u32;
-    fill_rect(
-        &mut fb,
-        w as u32,
-        0,
-        list_top,
-        sidebar_w,
-        list_bottom.saturating_sub(list_top),
-        PANEL,
-    );
-    layout.rows = render_sidebar(&mut fb, w as u32, h as u32, state, sidebar_w, list_top);
-
-    // Info panel (right edge)
-    let info_x = w as u32 - info_w;
-    fill_rect(
-        &mut fb,
-        w as u32,
-        info_x,
-        list_top,
-        info_w,
-        h as u32 - list_top,
-        PANEL,
-    );
-    render_info_panel(&mut fb, w as u32, h as u32, state, info_x, list_top, info_w);
-
-    // Preview area (center)
-    let prev_x = sidebar_w;
-    let prev_y = list_top;
-    let prev_w = info_x.saturating_sub(sidebar_w);
-    let prev_h = h as u32 - list_top;
-    layout.preview = Rect {
-        x: prev_x,
-        y: prev_y,
-        w: prev_w,
-        h: prev_h,
+    // While a game is running the guest frame is the background; the
+    // chrome is hidden and only the emulation overlay (Ctrl+Alt+T) is drawn.
+    if state.running {
+        if let Some(gf) = &state.guest_frame {
+            let px = super::preview::scale_rgba(
+                &gf.pixels,
+                gf.width as usize,
+                gf.height as usize,
+                w as usize,
+                h as usize,
+            );
+            if px.len() == fb.len() {
+                fb.copy_from_slice(&px);
+            }
+        }
+        if state.emu_menu_open {
+            draw_emu_menu(&mut fb, w, h, state, &mut layout);
+        }
+        return (fb, layout);
+    }
+    draw_topbar(&mut fb, w, h, state, &mut layout);
+    let body_top = TOP_H + HEAD_H;
+    let body_bottom = h.saturating_sub(FOOT_H);
+    draw_header(&mut fb, w, h, state);
+    let banner = if state.software_mode {
+        draw_banner(&mut fb, w, h, state);
+        32
+    } else {
+        0
     };
-    let preview = layout.preview;
-    render_content(&mut fb, w as u32, h as u32, state, &preview, &mut layout);
-
-    // Retail-boot progress bar over the preview (Phase 24).
-    if let Some(boot) = &state.boot_progress {
-        let bar_x = prev_x + 10;
-        let bar_y = prev_y + 8;
-        let bar_w = prev_w.saturating_sub(20);
-        fill_rect(&mut fb, w as u32, bar_x, bar_y, bar_w, 6, PANEL_ALT);
-        let done = bar_w * boot.percent as u32 / 100;
-        let color = if boot.stage == BootStage::Failed {
-            RED
-        } else {
-            ACCENT
-        };
-        fill_rect(&mut fb, w as u32, bar_x, bar_y, done, 6, color);
+    let area = Rect {
+        x: MARGIN,
+        y: body_top + banner + 24,
+        w: w.saturating_sub(MARGIN * 2),
+        h: body_bottom.saturating_sub(body_top + 24),
+    };
+    match state.view {
+        GuiView::Home => draw_home(&mut fb, w, h, state, &area, &mut layout),
+        GuiView::Library => draw_library(&mut fb, w, h, state, &area, &mut layout),
+        GuiView::Emulation => draw_emulation(&mut fb, w, h, state, &area, &mut layout),
+        GuiView::Settings => draw_settings_view(&mut fb, w, h, state, &area),
+        GuiView::Logs => draw_logs(&mut fb, w, h, state, &area, &mut layout),
+        GuiView::About => draw_about(&mut fb, w, h, state, &area),
     }
-
-    // Fallback-renderer warning banner (under the toolbar).
-    if !state.software_message.is_empty() {
-        let banner_h = 18u32;
-        fill_rect(
-            &mut fb,
-            w as u32,
-            0,
-            toolbar_h,
-            w as u32,
-            banner_h,
-            theme::mix(theme::PANEL, theme::BISEXUAL[0], 0.35),
-        );
-        draw_text(
-            &mut fb,
-            w as u32,
-            h as u32,
-            12,
-            toolbar_h + 5,
-            &truncate(&state.software_message.to_uppercase(), 90),
-            theme::TRANS_WHITE,
-            1,
-        );
+    draw_footer(&mut fb, w, h, state, &mut layout);
+    if state.emu_menu_open {
+        draw_emu_menu(&mut fb, w, h, state, &mut layout);
     }
-
-    // Settings overlay (toggled with O).
     if state.settings_open {
-        render_settings_panel(&mut fb, w as u32, h as u32, state);
+        draw_settings_modal(&mut fb, w, h, state);
     }
-
     (fb, layout)
 }
 
-/// Top navigation strip: six views, one consistent visual language.
-fn render_navigation(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    state: &WindowedGuiState,
-    toolbar_h: u32,
-) -> Vec<(Rect, &'static str)> {
-    let mut items = Vec::new();
-    let nav_y = toolbar_h;
-    let nav_h = 20u32;
-    let gap = 6u32;
-    let bw = (fb_w.saturating_sub(24 + gap * 5)) / 6;
-    if bw < 24 {
-        return items;
+/// Human-readable emulator state.
+fn state_label(state: &WindowedGuiState) -> &'static str {
+    if !state.running {
+        "IDLE"
+    } else if state.paused {
+        "PAUSED"
+    } else {
+        "RUNNING"
     }
-    for (i, view) in GuiView::ALL.iter().enumerate() {
-        let x = 12 + i as u32 * (bw + gap);
-        let r = Rect {
-            x,
-            y: nav_y,
-            w: bw,
-            h: nav_h,
-        };
-        let active = state.view == *view;
-        let fill = if active {
-            theme::mix(PANEL_ALT, theme::TRANS_BLUE, 0.35)
-        } else {
-            PANEL_ALT
-        };
-        fill_rect(fb, fb_w, x, nav_y, bw, nav_h, fill);
-        // Active underline uses the trans flag; inactive uses a dim line.
-        draw_flag_bar(
-            fb,
-            fb_w,
-            x,
-            nav_y + nav_h - 2,
-            bw,
-            2,
-            if active {
-                &theme::TRANS_FLAG
-            } else {
-                &[DIM_ACCENT]
-            },
-            true,
-        );
-        let label = view.label();
-        let tw = text_width(label, 1);
-        if tw <= bw {
-            draw_text(
-                fb,
-                fb_w,
-                fb_h(fb, fb_w),
-                x + (bw - tw) / 2,
-                nav_y + (nav_h - 7) / 2,
-                label,
-                if active { theme::TRANS_WHITE } else { GRAY },
-                1,
-            );
-        }
-        items.push((r, label));
-    }
-    items
 }
 
-/// Draw the active view's main content area.
-///
-/// The software compositor stays the single source of UI pixels; no
-/// emulation logic runs here. All values come from `WindowedGuiState`.
-fn render_content(
+/// Short metadata line for a game entry.
+fn game_meta(game: &GameListItem) -> String {
+    format!(
+        "{}  \u{2022}  {} DISC{}",
+        game.region,
+        game.discs,
+        if game.discs > 1 { "S" } else { "" }
+    )
+}
+
+/// Whether a transport button can currently be used.
+pub fn button_enabled(label: &str, state: &WindowedGuiState) -> bool {
+    match label {
+        "LAUNCH" => !state.running && !state.games.is_empty(),
+        "PLAY" => state.running && state.paused,
+        "PAUSE" => state.running && !state.paused,
+        "EJECT" | "SAVE" | "LOAD" => state.running,
+        _ => true,
+    }
+}
+
+fn button_active(label: &str, state: &WindowedGuiState) -> bool {
+    match label {
+        "LAUNCH" => state.running,
+        "CHEATS" => state.cheat_engine_enabled,
+        _ => false,
+    }
+}
+
+fn draw_topbar(
     fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h_px: u32,
+    w: u32,
+    h: u32,
+    state: &WindowedGuiState,
+    layout: &mut UiLayout,
+) {
+    fill_rect(fb, w, 0, 0, w, TOP_H, BAR);
+    draw_flag_bar(fb, w, 0, TOP_H - 3, w, 3, &theme::TRANS_FLAG, true);
+    draw_text(fb, w, h, 48, 14, "XHOLY", WHITE, 2);
+    let mut x = TAB_X;
+    for view in GuiView::ALL.iter() {
+        let label = view.label();
+        let lw = text_width(label, 1);
+        let r = Rect {
+            x,
+            y: 0,
+            w: lw + 36,
+            h: TOP_H - 3,
+        };
+        let active = state.view == *view;
+        let hovered = r.contains(state.mouse.0, state.mouse.1);
+        let col = if active {
+            WHITE
+        } else if hovered {
+            TEXT
+        } else {
+            MUTED
+        };
+        draw_text(fb, w, h, r.x + 18, r.y + 17, label, col, 1);
+        if active {
+            fill_rect(fb, w, r.x + 10, TOP_H - 6, r.w - 20, 3, ACCENT);
+        }
+        layout.nav.push((r, label));
+        x += r.w + 4;
+    }
+    let label = state_label(state);
+    let color = match label {
+        "PAUSED" => PINK,
+        "RUNNING" => ACCENT,
+        _ => MUTED,
+    };
+    let pw = text_width(label, 1) + 40;
+    let px = w.saturating_sub(pw + MARGIN);
+    fill_rect_rounded(fb, w, px, 12, pw, 24, 12, CARD);
+    fill_rect_rounded(fb, w, px + 14, 20, 8, 8, 4, color);
+    draw_text(fb, w, h, px + 30, 17, label, TEXT, 1);
+}
+
+fn draw_header(fb: &mut Framebuffer, w: u32, h: u32, state: &WindowedGuiState) {
+    fill_rect(fb, w, 0, TOP_H, w, HEAD_H, PANEL);
+    fill_rect(fb, w, 0, TOP_H + HEAD_H - 1, w, 1, CARD);
+    let (title, sub) = match state.view {
+        GuiView::Home => (
+            "HOME",
+            "Your library at a glance. Pick a game and launch it.",
+        ),
+        GuiView::Library => ("GAME LIBRARY", "Every game found in your library folder."),
+        GuiView::Emulation => ("EMULATION", "Live state of the running title."),
+        GuiView::Settings => ("SETTINGS", "Current configuration, read-only in this view."),
+        GuiView::Logs => ("DIAGNOSTICS", "Output and messages from the emulator."),
+        GuiView::About => ("ABOUT", "Version, platform and project information."),
+    };
+    draw_text(fb, w, h, 48, TOP_H + 16, title, ACCENT, 2);
+    draw_text(fb, w, h, 48, TOP_H + 52, sub, MUTED, 1);
+}
+
+fn draw_footer(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    state: &WindowedGuiState,
+    layout: &mut UiLayout,
+) {
+    let top = h.saturating_sub(FOOT_H);
+    fill_rect(fb, w, 0, top, w, FOOT_H, BAR);
+    fill_rect(fb, w, 0, top, w, 1, CARD);
+    draw_text(fb, w, h, MARGIN, top + 14, "CONTROLS", MUTED, 1);
+    let inner = w.saturating_sub(MARGIN * 2);
+    let bw = (inner.saturating_sub(GAP * 6) / 7).clamp(96, 240);
+    let by = top + 40;
+    for (i, (label, flag)) in theme::BUTTON_FLAGS.iter().enumerate() {
+        let r = Rect {
+            x: MARGIN + i as u32 * (bw + GAP),
+            y: by,
+            w: bw,
+            h: BUTTON_H,
+        };
+        let enabled = button_enabled(label, state);
+        let hovered = enabled && r.contains(state.mouse.0, state.mouse.1);
+        let pressed = hovered && state.mouse_down;
+        let active = button_active(label, state);
+        draw_button(fb, w, h, r, label, flag, enabled, hovered, pressed, active);
+        layout.buttons.push((r, *label));
+    }
+}
+/// Transport button: flag stripes on the surface, dark label chip.
+#[allow(clippy::too_many_arguments)]
+fn draw_button(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    r: Rect,
+    label: &str,
+    flag: &[Rgba],
+    enabled: bool,
+    hovered: bool,
+    pressed: bool,
+    active: bool,
+) {
+    let bands = flag.len().max(1) as u32;
+    for (i, color) in flag.iter().enumerate() {
+        let i = i as u32;
+        let y0 = r.y + i * r.h / bands;
+        let y1 = r.y + (i + 1) * r.h / bands;
+        let c = if !enabled {
+            theme::mix(PANEL, *color, 0.30)
+        } else if pressed {
+            theme::shade(*color, 0.72)
+        } else if hovered {
+            theme::mix(*color, WHITE, 0.18)
+        } else {
+            *color
+        };
+        fill_rect(fb, w, r.x, y0, r.w, y1 - y0, c);
+    }
+    let cw = text_width(label, 2) + 28;
+    let cx = r.x + r.w.saturating_sub(cw) / 2;
+    let cy = r.y + r.h.saturating_sub(30) / 2;
+    fill_rect_rounded(fb, w, cx, cy, cw, 30, 8, BG);
+    let col = if enabled { WHITE } else { MUTED };
+    draw_text(fb, w, h, cx + 14, cy + 8, label, col, 2);
+    if active {
+        fill_rect(
+            fb,
+            w,
+            r.x + 10,
+            r.y + r.h - 4,
+            r.w.saturating_sub(20),
+            4,
+            WHITE,
+        );
+    }
+    if hovered {
+        stroke_rect(fb, w, r.x, r.y, r.w, r.h, WHITE);
+    }
+}
+
+/// Rounded surface with a heading.
+fn card(fb: &mut Framebuffer, w: u32, h: u32, r: Rect, title: &str) {
+    fill_rect_rounded(fb, w, r.x, r.y, r.w, r.h, 14, CARD);
+    draw_text(fb, w, h, r.x + 20, r.y + 18, title, MUTED, 1);
+}
+
+/// Label/value list; returns the y coordinate after the last row.
+fn kv_rows(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    x: u32,
+    y: u32,
+    width: u32,
+    rows: &[(&str, String)],
+) -> u32 {
+    let mut yy = y;
+    for (label, value) in rows {
+        draw_text(fb, w, h, x, yy, label, MUTED, 1);
+        let vw = text_width(value, 1);
+        draw_text(
+            fb,
+            w,
+            h,
+            (x + width).saturating_sub(vw),
+            yy,
+            value,
+            ACCENT,
+            1,
+        );
+        fill_rect(fb, w, x, yy + 22, width, 1, BG);
+        yy += 34;
+    }
+    yy
+}
+
+fn on_off(value: bool) -> String {
+    if value {
+        "ON".into()
+    } else {
+        "OFF".into()
+    }
+}
+
+/// Settings as label/value pairs (read-only; values come from CLI/config).
+fn settings_rows(state: &WindowedGuiState) -> Vec<(&'static str, String)> {
+    let fps = state
+        .fps_limit
+        .map(|f| f.to_string())
+        .unwrap_or_else(|| "UNLIMITED".into());
+    vec![
+        (
+            "RESOLUTION",
+            format!("{} X {}", state.resolution.0, state.resolution.1),
+        ),
+        ("FPS LIMIT", fps),
+        ("VSYNC", on_off(state.vsync)),
+        ("FULLSCREEN", on_off(state.fullscreen)),
+        ("THEME", format!("{:?}", state.theme).to_uppercase()),
+        ("GPU API", state.gpu_label.to_uppercase()),
+        ("SOFTWARE RENDERER", on_off(state.software_mode)),
+    ]
+}
+
+/// Pride palette per game tile, chosen by position so the mapping is stable.
+fn tile_palette(index: usize) -> &'static [Rgba] {
+    match index % 4 {
+        0 => &theme::TRANS_FLAG,
+        1 => &theme::BISEXUAL,
+        2 => &theme::PANSEXUAL,
+        _ => &theme::LESBIAN,
+    }
+}
+
+/// Vertical gradient tile in a pride palette, with title and metadata.
+fn draw_tile(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    r: Rect,
+    game: &GameListItem,
+    index: usize,
+    selected: bool,
+) {
+    let palette = tile_palette(index);
+    let top = palette[0];
+    for row in 0..r.h {
+        let t = row as f32 / r.h as f32;
+        let c = theme::mix(top, BG, (t * 0.9).min(1.0));
+        fill_rect(fb, w, r.x, r.y + row, r.w, 1, c);
+    }
+    let band_h = (r.h / 10).max(4);
+    draw_flag_bar(fb, w, r.x, r.y, r.w, band_h, palette, true);
+    let title = truncate(&game.title.to_uppercase(), 24);
+    draw_text(fb, w, h, r.x + 20, r.y + r.h - 74, &title, WHITE, 2);
+    draw_text(
+        fb,
+        w,
+        h,
+        r.x + 20,
+        r.y + r.h - 36,
+        &game_meta(game),
+        TEXT,
+        1,
+    );
+    if selected {
+        stroke_rect(fb, w, r.x, r.y, r.w, r.h, WHITE);
+    }
+}
+
+fn draw_home(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
     state: &WindowedGuiState,
     area: &Rect,
     layout: &mut UiLayout,
 ) {
-    match state.view {
-        GuiView::Emulation => render_preview_area(fb, fb_w, fb_h_px, state, area),
-        GuiView::Library => {
-            if state.running && state.guest_frame.is_some() {
-                render_preview_area(fb, fb_w, fb_h_px, state, area);
-            } else {
-                render_cover_grid(fb, fb_w, fb_h_px, state, area, layout);
+    if state.games.is_empty() {
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x,
+            area.y,
+            "NO GAMES IN LIBRARY YET",
+            MUTED,
+            2,
+        );
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x,
+            area.y + 34,
+            "Add game images or dumps to the library folder.",
+            DIM,
+            1,
+        );
+    } else {
+        let mut order: Vec<usize> = (0..state.games.len()).collect();
+        order.sort_by(|a, b| {
+            state.games[*b]
+                .last_played
+                .cmp(&state.games[*a].last_played)
+        });
+        let no_history = order
+            .first()
+            .map(|i| state.games[*i].last_played.is_none())
+            .unwrap_or(true);
+        let label = if no_history {
+            "YOUR GAMES  \u{2022}  NO PLAY HISTORY YET"
+        } else {
+            "RECENTLY PLAYED"
+        };
+        draw_text(fb, w, h, area.x, area.y, label, MUTED, 1);
+
+        let gap = 24;
+        let tw = 340u32;
+        let th = area.h.saturating_sub(36).clamp(120, 220);
+        let cols = ((area.w + gap) / (tw + gap)).max(1);
+        let top = area.y + 36;
+        for (slot, idx) in order.iter().enumerate() {
+            let col = slot as u32 % cols;
+            let row = slot as u32 / cols;
+            let r = Rect {
+                x: area.x + col * (tw + gap),
+                y: top + row * (th + gap),
+                w: tw,
+                h: th,
+            };
+            if r.y + r.h > area.y + area.h {
+                break;
             }
+            let game = &state.games[*idx];
+            draw_tile(fb, w, h, r, game, *idx, *idx == state.selected_game);
+            layout.rows.push((r, *idx));
         }
-        GuiView::Home => render_home(fb, fb_w, fb_h_px, state, area),
-        GuiView::Settings => render_settings_view(fb, fb_w, fb_h_px, state, area),
-        GuiView::Logs => render_logs(fb, fb_w, fb_h_px, state, area),
-        GuiView::About => render_about(fb, fb_w, fb_h_px, state, area),
+    }
+    let sys_y = area.y + area.h.saturating_sub(150);
+    if sys_y > area.y + 260 {
+        let gap = 24;
+        let cw = (area.w.saturating_sub(gap * 2) / 3).max(200);
+        let ch = 124;
+        let c1 = Rect {
+            x: area.x,
+            y: sys_y,
+            w: cw,
+            h: ch,
+        };
+        card(fb, w, h, c1, "EMULATOR");
+        draw_text(fb, w, h, c1.x + 20, c1.y + 46, state_label(state), TEXT, 2);
+        let games = format!("{} GAMES IN LIBRARY", state.games.len());
+        draw_text(fb, w, h, c1.x + 20, c1.y + 88, &games, MUTED, 1);
+
+        let c2 = Rect {
+            x: area.x + cw + gap,
+            y: sys_y,
+            w: cw,
+            h: ch,
+        };
+        card(fb, w, h, c2, "DISPLAY");
+        let res = format!("{} X {}", state.resolution.0, state.resolution.1);
+        draw_text(fb, w, h, c2.x + 20, c2.y + 46, &res, TEXT, 2);
+        let gpu = truncate(&state.gpu_label.to_uppercase(), 40);
+        draw_text(fb, w, h, c2.x + 20, c2.y + 88, &gpu, MUTED, 1);
+
+        let c3 = Rect {
+            x: area.x + 2 * (cw + gap),
+            y: sys_y,
+            w: cw,
+            h: ch,
+        };
+        card(fb, w, h, c3, "KEYBOARD");
+        let keys = [
+            "ESC  PAUSE   E  EJECT   Q  QUIT",
+            "F5 SAVE   F9 LOAD   C  CHEATS",
+        ];
+        for (i, key) in keys.iter().enumerate() {
+            draw_text(
+                fb,
+                w,
+                h,
+                c3.x + 20,
+                c3.y + 52 + i as u32 * 24,
+                key,
+                MUTED,
+                1,
+            );
+        }
     }
 }
 
-fn panel_heading(fb: &mut Framebuffer, fb_w: u32, fb_h_px: u32, area: &Rect, title: &str) {
+fn draw_library(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+    layout: &mut UiLayout,
+) {
+    let query = state.search.trim().to_ascii_lowercase();
+    let games: Vec<(usize, &GameListItem)> = state
+        .games
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| query.is_empty() || g.title.to_ascii_lowercase().contains(&query))
+        .collect();
+    if games.is_empty() {
+        draw_text(fb, w, h, area.x, area.y, "NO GAMES MATCH", MUTED, 2);
+        return;
+    }
+    let gap = 24;
+    let cw = 300u32;
+    let img_h = cw * 3 / 4;
+    let ch = img_h + 70;
+    let cols = ((area.w + gap) / (cw + gap)).max(1);
+    let loader = thumbnails::loader();
+    for (slot, (index, game)) in games.iter().enumerate() {
+        let col = slot as u32 % cols;
+        let row = slot as u32 / cols;
+        let r = Rect {
+            x: area.x + col * (cw + gap),
+            y: area.y + row * (ch + gap),
+            w: cw,
+            h: ch,
+        };
+        if r.y + r.h > area.y + area.h {
+            break;
+        }
+        let selected = *index == state.selected_game;
+        fill_rect_rounded(fb, w, r.x, r.y, r.w, r.h, 14, CARD);
+        let cover = game.cover_art.as_ref().and_then(|path| {
+            let cache = loader.cache();
+            if cache.get(path).is_none() {
+                loader.queue(path.clone());
+            }
+            cache.get(path).flatten()
+        });
+        let image = cover
+            .map(|img| thumbnails::cover_fit(&img, r.w, img_h))
+            .unwrap_or_else(|| thumbnails::placeholder(r.w, img_h));
+        blit_rgba(
+            fb,
+            w,
+            h,
+            &image.pixels,
+            image.width as usize,
+            image.height as usize,
+            r.x,
+            r.y,
+        );
+        if selected {
+            stroke_rect(fb, w, r.x, r.y, r.w, r.h, WHITE);
+        }
+        draw_flag_bar(
+            fb,
+            w,
+            r.x,
+            r.y + img_h - 4,
+            r.w,
+            4,
+            &theme::TRANS_FLAG,
+            true,
+        );
+        let title = truncate(&game.title.to_uppercase(), 26);
+        let col_t = if selected { WHITE } else { TEXT };
+        draw_text(fb, w, h, r.x + 14, r.y + img_h + 14, &title, col_t, 1);
+        draw_text(
+            fb,
+            w,
+            h,
+            r.x + 14,
+            r.y + img_h + 34,
+            &game_meta(game),
+            MUTED,
+            1,
+        );
+        draw_text(
+            fb,
+            w,
+            h,
+            r.x + 14,
+            r.y + img_h + 52,
+            "COMPATIBILITY NOT VERIFIED",
+            DIM,
+            1,
+        );
+        layout.covers.push((r, *index));
+    }
+}
+fn draw_emulation(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+    layout: &mut UiLayout,
+) {
+    let pv_w = area.w * 3 / 5;
+    let pv = Rect {
+        x: area.x,
+        y: area.y,
+        w: pv_w.saturating_sub(12),
+        h: area.h,
+    };
+    draw_preview(fb, w, h, state, &pv);
+    layout.preview = pv;
+
+    let side_x = area.x + pv_w;
+    let side_w = area.w.saturating_sub(pv_w);
+    let st = Rect {
+        x: side_x,
+        y: area.y,
+        w: side_w,
+        h: 124,
+    };
+    card(fb, w, h, st, "STATE");
+    draw_text(fb, w, h, st.x + 20, st.y + 46, state_label(state), TEXT, 2);
+
+    let perf = Rect {
+        x: side_x,
+        y: area.y + 140,
+        w: side_w,
+        h: 236,
+    };
+    card(fb, w, h, perf, "PERFORMANCE");
+    let rows: Vec<(&str, String)> = if state.running {
+        vec![
+            ("FPS", format!("{:.0}", state.fps)),
+            ("CPU", format!("{:.0} %", state.cpu_usage * 100.0)),
+            ("GPU", format!("{:.0} %", state.gpu_usage * 100.0)),
+            (
+                "MEMORY",
+                format!("{} MB", state.memory_usage / (1024 * 1024)),
+            ),
+        ]
+    } else {
+        vec![
+            ("FPS", "-".into()),
+            ("CPU", "-".into()),
+            ("GPU", "-".into()),
+            ("MEMORY", "-".into()),
+        ]
+    };
+    kv_rows(
+        fb,
+        w,
+        h,
+        perf.x + 20,
+        perf.y + 50,
+        perf.w.saturating_sub(40),
+        &rows,
+    );
+    let note = if state.running {
+        "LIVE VALUES"
+    } else {
+        "VALUES APPEAR WHILE RUNNING"
+    };
+    draw_text(fb, w, h, perf.x + 20, perf.y + 204, note, DIM, 1);
+
+    let out_y = perf.y + perf.h + 20;
+    if area.y + area.h > out_y + 80 {
+        let out = Rect {
+            x: side_x,
+            y: out_y,
+            w: side_w,
+            h: area.y + area.h - out_y,
+        };
+        card(fb, w, h, out, "OUTPUT");
+        let max_rows = (out.h.saturating_sub(50) / 18) as usize;
+        let max_chars = (out.w / 9) as usize;
+        let mut ty = out.y + 50;
+        for line in state.console_log.iter().rev().take(max_rows) {
+            draw_text(
+                fb,
+                w,
+                h,
+                out.x + 20,
+                ty,
+                &truncate(line, max_chars),
+                MUTED,
+                1,
+            );
+            ty += 18;
+        }
+        if state.console_log.is_empty() {
+            draw_text(fb, w, h, out.x + 20, ty, "NO OUTPUT YET", DIM, 1);
+        }
+    }
+}
+
+fn draw_preview(fb: &mut Framebuffer, w: u32, h: u32, state: &WindowedGuiState, area: &Rect) {
+    fill_rect_rounded(fb, w, area.x, area.y, area.w, area.h, 14, BAR);
+    let Some(game) = state.selected() else {
+        let msg = "SELECT A GAME";
+        let mx = area.x + area.w.saturating_sub(text_width(msg, 2)) / 2;
+        draw_text(fb, w, h, mx, area.y + area.h / 2, msg, MUTED, 2);
+        return;
+    };
+    let (pw, ph) = fit_size(
+        state.preview_size.0,
+        state.preview_size.1,
+        area.w.saturating_sub(48),
+        area.h.saturating_sub(120),
+    );
+    let pixels = match &state.guest_frame {
+        Some(gf) => scale_rgba(
+            &gf.pixels,
+            gf.width as usize,
+            gf.height as usize,
+            pw as usize,
+            ph as usize,
+        ),
+        None => render_game_preview(game, pw, ph),
+    };
+    let ox = area.x + area.w.saturating_sub(pw) / 2;
+    let oy = area.y + 24;
+    blit_rgba(fb, w, h, &pixels, pw as usize, ph as usize, ox, oy);
+    let title = truncate(&game.title.to_uppercase(), 40);
     draw_text(
         fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        area.y + 16,
-        title,
-        ACCENT,
+        w,
+        h,
+        area.x + 24,
+        area.y + area.h.saturating_sub(70),
+        &title,
+        WHITE,
         2,
     );
-    draw_flag_bar(
+    draw_text(
         fb,
-        fb_w,
-        area.x + 18,
-        area.y + 38,
-        area.w.saturating_sub(36).min(180),
-        3,
-        &theme::TRANS_FLAG,
-        true,
+        w,
+        h,
+        area.x + 24,
+        area.y + area.h.saturating_sub(36),
+        &game_meta(game),
+        MUTED,
+        1,
     );
 }
 
-fn render_home(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h_px: u32,
-    state: &WindowedGuiState,
-    area: &Rect,
-) {
-    panel_heading(fb, fb_w, fb_h_px, area, "xHOLY");
-    let mut y = area.y + 56;
-    let status = if state.running {
-        "EMULATOR: RUNNING"
-    } else if state.paused {
-        "EMULATOR: PAUSED"
-    } else {
-        "EMULATOR: IDLE"
+fn draw_settings_view(fb: &mut Framebuffer, w: u32, h: u32, state: &WindowedGuiState, area: &Rect) {
+    draw_text(
+        fb,
+        w,
+        h,
+        area.x,
+        area.y,
+        "Read-only here. Change values via CLI flags or the config file.",
+        DIM,
+        1,
+    );
+    let rows = settings_rows(state);
+    let gap = 24;
+    let col_w = area.w.saturating_sub(gap) / 2;
+    let top = area.y + 40;
+    let ch = 320;
+    let left = Rect {
+        x: area.x,
+        y: top,
+        w: col_w,
+        h: ch,
     };
-    draw_text(
+    let right = Rect {
+        x: area.x + col_w + gap,
+        y: top,
+        w: col_w,
+        h: ch,
+    };
+    card(fb, w, h, left, "DISPLAY AND PERFORMANCE");
+    kv_rows(
         fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        y,
-        status,
-        theme::TRANS_PINK,
-        1,
+        w,
+        h,
+        left.x + 20,
+        left.y + 52,
+        col_w.saturating_sub(40),
+        &rows[0..4],
     );
-    y += 20;
-    draw_text(
+    card(fb, w, h, right, "GRAPHICS");
+    kv_rows(
         fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        y,
-        &format!("{} GAMES IN LIBRARY", state.games.len()),
-        theme::TRANS_WHITE,
-        1,
+        w,
+        h,
+        right.x + 20,
+        right.y + 52,
+        col_w.saturating_sub(40),
+        &rows[4..7],
     );
-    y += 28;
-    draw_text(
-        fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        y,
-        "RECENT GAMES",
-        DIM_ACCENT,
-        1,
-    );
-    y += 18;
-    for (i, game) in state.games.iter().take(3).enumerate() {
-        if y + 12 > area.y + area.h {
-            break;
-        }
-        draw_text(
-            fb,
-            fb_w,
-            fb_h_px,
-            area.x + 18,
-            y,
-            &truncate(&game.title.to_uppercase(), 32),
-            if i == 0 { ACCENT } else { TEXT },
-            1,
-        );
-        y += 16;
-    }
-    y += 12;
-    draw_text(
-        fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        y,
-        "PRESS LIBRARY TO BROWSE",
-        GRAY,
-        1,
-    );
-    y += 16;
-    draw_text(
-        fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        y,
-        "O: SETTINGS  |  L: LOGS",
-        GRAY,
-        1,
-    );
-    let _ = fb_h_px;
 }
 
-fn render_settings_view(
+const LOG_CHIPS: [(&str, LogFilter); 4] = [
+    ("ALL", LogFilter::All),
+    ("INFO", LogFilter::Info),
+    ("WARNING", LogFilter::Warning),
+    ("ERROR", LogFilter::Error),
+];
+
+/// Severity tag of a log line (ERR, WRN or INF).
+fn severity(line: &str) -> &'static str {
+    let l = line.to_ascii_lowercase();
+    if l.contains("error") {
+        "ERR"
+    } else if l.contains("warn") {
+        "WRN"
+    } else {
+        "INF"
+    }
+}
+
+fn line_visible(line: &str, filter: LogFilter) -> bool {
+    let sev = severity(line);
+    match filter {
+        LogFilter::Error => sev == "ERR",
+        LogFilter::Warning => sev != "INF",
+        _ => true,
+    }
+}
+
+fn draw_logs(
     fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h_px: u32,
+    w: u32,
+    h: u32,
     state: &WindowedGuiState,
     area: &Rect,
+    layout: &mut UiLayout,
 ) {
-    panel_heading(fb, fb_w, fb_h_px, area, "SETTINGS");
-    let groups = [
-        "GENERAL",
-        "GRAPHICS",
-        "AUDIO",
-        "INPUT",
-        "CPU / EMULATION",
-        "DISCORD",
-        "LOGS & DEBUG",
-    ];
+    let mut cx = area.x;
+    let cy = area.y;
+    for (label, filter) in LOG_CHIPS {
+        let cw = text_width(label, 1) + 36;
+        let r = Rect {
+            x: cx,
+            y: cy,
+            w: cw,
+            h: 32,
+        };
+        let active = match filter {
+            LogFilter::All => matches!(state.log_filter, LogFilter::All | LogFilter::Debug),
+            other => state.log_filter == other,
+        };
+        let bg = if active { ACCENT } else { CARD };
+        let col = if active { BG } else { MUTED };
+        fill_rect_rounded(fb, w, r.x, r.y, r.w, r.h, 16, bg);
+        draw_text(fb, w, h, r.x + 18, r.y + 12, label, col, 1);
+        layout.filters.push((r, label));
+        cx += cw + 12;
+    }
+
     let mut y = area.y + 56;
-    for (i, group) in groups.iter().enumerate() {
-        if y + 14 > area.y + area.h {
-            break;
-        }
-        let color = if i % 2 == 0 {
-            ACCENT
+    let bottom = area.y + area.h;
+    let max_rows = (bottom.saturating_sub(y) / 26) as usize;
+    let visible: Vec<&String> = state
+        .console_log
+        .iter()
+        .rev()
+        .filter(|l| line_visible(l, state.log_filter))
+        .take(max_rows)
+        .collect();
+    if visible.is_empty() {
+        let msg = if state.console_log.is_empty() {
+            "NO LOG ENTRIES YET"
         } else {
-            theme::TRANS_PINK
+            "NO ENTRIES MATCH THIS FILTER"
         };
-        draw_text(fb, fb_w, fb_h_px, area.x + 18, y, group, color, 1);
-        fill_rect(
-            fb,
-            fb_w,
-            area.x + 18,
-            y + 13,
-            area.w.saturating_sub(36).min(220),
-            1,
-            DIM_ACCENT,
-        );
-        y += 22;
+        draw_text(fb, w, h, area.x, y, msg, MUTED, 1);
+        return;
     }
-    draw_text(
-        fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        y + 4,
-        &format!(
-            "THEME: {:?}  GPU: {}",
-            state.theme,
-            truncate(&state.gpu_label, 20)
-        ),
-        GRAY,
-        1,
-    );
-}
-
-fn render_logs(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h_px: u32,
-    state: &WindowedGuiState,
-    area: &Rect,
-) {
-    panel_heading(fb, fb_w, fb_h_px, area, "DIAGNOSTICS");
-    draw_text(
-        fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        area.y + 48,
-        "FILTER: ALL / INFO / WARNING / ERROR",
-        GRAY,
-        1,
-    );
-    let mut y = area.y + 66;
-    for line in state.console_log.iter().rev().take(8) {
-        if y + 12 > area.y + area.h {
-            break;
-        }
-        // Structured view: level tag + module + message where available.
-        let (tag, color) = if line.contains("error") {
-            ("ERR", theme::TRANS_PINK)
-        } else if line.contains("warn") {
-            ("WRN", theme::TRANS_PINK)
-        } else {
-            ("INF", ACCENT)
+    let max_chars = (area.w.saturating_sub(120) / 9) as usize;
+    for line in visible {
+        let sev = severity(line);
+        let color = match sev {
+            "ERR" => RED,
+            "WRN" => YELLOW,
+            _ => ACCENT,
         };
-        draw_text(fb, fb_w, fb_h_px, area.x + 18, y, tag, color, 1);
+        fill_rect_rounded(fb, w, area.x, y, 46, 18, 6, color);
+        draw_text(fb, w, h, area.x + 10, y + 4, sev, BG, 1);
         draw_text(
             fb,
-            fb_w,
-            fb_h_px,
-            area.x + 60,
-            y,
-            &truncate(line, 36),
+            w,
+            h,
+            area.x + 62,
+            y + 4,
+            &truncate(line, max_chars),
             TEXT,
             1,
         );
-        y += 14;
-    }
-    if state.console_log.is_empty() {
-        draw_text(
-            fb,
-            fb_w,
-            fb_h_px,
-            area.x + 18,
-            y,
-            "NO LOG ENTRIES YET",
-            GRAY,
-            1,
-        );
+        y += 26;
     }
 }
 
-fn render_about(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h_px: u32,
-    state: &WindowedGuiState,
-    area: &Rect,
-) {
-    panel_heading(fb, fb_w, fb_h_px, area, "ABOUT xHOLY");
-    let mut y = area.y + 56;
-    for line in [
-        "xHoly - research HLE emulator",
-        "Xbox One / Xbox Series X|S",
-        "Windows x86-64 / Linux x86-64",
-        "Pride UI: trans-blue / trans-pink / white",
-        "Discord Rich Presence: enabled via config",
-        "ScarlettX: compatibility reference",
-    ] {
-        draw_text(fb, fb_w, fb_h_px, area.x + 18, y, line, TEXT, 1);
-        y += 18;
-    }
-    draw_text(
-        fb,
-        fb_w,
-        fb_h_px,
-        area.x + 18,
-        y + 6,
-        &format!("GPU: {}", truncate(&state.gpu_label, 32)),
-        GRAY,
-        1,
-    );
-}
-
-/// Centered settings panel: resolution, FPS limit, vsync, fullscreen,
-/// theme, GPU API. Read-only display — values come from CLI/config.
-fn render_settings_panel(fb: &mut Framebuffer, fb_w: u32, fb_h: u32, state: &WindowedGuiState) {
-    let pw = 340u32;
-    let ph = 220u32;
-    let px = fb_w.saturating_sub(pw) / 2;
-    let py = fb_h.saturating_sub(ph) / 2;
-
-    // Dim the background.
-    for y in 0..fb_h {
-        for x in 0..fb_w {
-            let i = (y as usize * fb_w as usize + x as usize) * 4;
-            fb[i] = fb[i].saturating_mul(2) / 3;
-            fb[i + 1] = fb[i + 1].saturating_mul(2) / 3;
-            fb[i + 2] = fb[i + 2].saturating_mul(2) / 3;
-        }
-    }
-
-    fill_rect_rounded(fb, fb_w, px, py, pw, ph, 10, PANEL);
-    fill_rect(fb, fb_w, px + 8, py + ph - 1, pw - 16, 1, theme::TRANS_BLUE);
-    draw_flag_bar(
-        fb,
-        fb_w,
-        px + 1,
-        py + 1,
-        pw - 2,
-        3,
-        &theme::TRANS_FLAG,
-        true,
-    );
-    draw_text(
-        fb,
-        fb_w,
-        fb_h,
-        px + 15,
-        py + 11,
-        "SETTINGS",
-        theme::TRANS_PINK,
-        2,
-    );
-    draw_text(
-        fb,
-        fb_w,
-        fb_h,
-        px + 14,
-        py + 10,
-        "SETTINGS",
-        theme::TRANS_WHITE,
-        2,
-    );
-
-    let mut y = py + 44;
-    let rows: [(String, String); 7] = [
-        (
-            "RESOLUTION".into(),
-            format!("{}X{}", state.resolution.0, state.resolution.1),
-        ),
-        (
-            "FPS LIMIT".into(),
-            state
-                .fps_limit
-                .map(|f| f.to_string())
-                .unwrap_or_else(|| "UNLIMITED".into()),
-        ),
-        (
-            "VSYNC".into(),
-            if state.vsync {
-                "ON".into()
-            } else {
-                "OFF".into()
-            },
-        ),
-        (
-            "FULLSCREEN".into(),
-            if state.fullscreen {
-                "ON".into()
-            } else {
-                "OFF".into()
-            },
-        ),
-        ("THEME".into(), format!("{:?}", state.theme).to_uppercase()),
-        ("GPU API".into(), state.gpu_label.to_uppercase()),
-        (
-            "SOFTWARE".into(),
-            if state.software_mode {
-                "YES".into()
-            } else {
-                "NO".into()
-            },
-        ),
+fn draw_about(fb: &mut Framebuffer, w: u32, h: u32, state: &WindowedGuiState, area: &Rect) {
+    let c = Rect {
+        x: area.x,
+        y: area.y,
+        w: area.w.min(860),
+        h: area.h.min(460),
+    };
+    card(fb, w, h, c, "ABOUT");
+    draw_text(fb, w, h, c.x + 20, c.y + 50, "XHOLY", WHITE, 3);
+    let version = format!("VERSION {}", env!("CARGO_PKG_VERSION"));
+    draw_text(fb, w, h, c.x + 20, c.y + 104, &version, MUTED, 1);
+    draw_flag_bar(fb, w, c.x + 20, c.y + 126, 220, 4, &theme::TRANS_FLAG, true);
+    let platform = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH).to_uppercase();
+    let rows: Vec<(&str, String)> = vec![
+        ("PLATFORM", platform),
+        ("GPU", state.gpu_label.to_uppercase()),
+        ("TARGET", "XBOX SERIES X|S (GEN9)".into()),
+        ("HOSTS", "WINDOWS X86-64, LINUX X86-64".into()),
+        ("DISCORD", "RICH PRESENCE, CONFIGURABLE".into()),
+        ("REFERENCE", "SCARLETTX (SOURCE NOT COPIED)".into()),
+        ("FONT", "INTER (SIL OPEN FONT LICENSE)".into()),
     ];
-    for (label, value) in rows {
-        draw_text(fb, fb_w, fb_h, px + 14, y, &label, GRAY, 1);
-        draw_text(
-            fb,
-            fb_w,
-            fb_h,
-            (px + pw).saturating_sub(14 + text_width(&value, 1)),
-            y,
-            &value,
-            theme::TRANS_PINK,
-            1,
-        );
-        fill_rect(fb, fb_w, px + 14, y + 15, pw - 28, 1, theme::DIM);
-        y += 20;
-    }
-    draw_text(
-        fb,
-        fb_w,
-        fb_h,
-        px + 14,
-        y + 6,
-        "PRESS O TO CLOSE",
-        DIM_ACCENT,
-        1,
-    );
+    kv_rows(fb, w, h, c.x + 20, c.y + 160, c.w.saturating_sub(40), &rows);
 }
 
-fn render_toolbar(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    state: &WindowedGuiState,
-    toolbar_h: u32,
-) -> Vec<(Rect, &'static str)> {
-    // Every control carries a different LGBTQ+ flag; LAUNCH (the primary
-    // action) uses the trans flag. Dynamic states overlay the flag stripe.
-    let labels: [&'static str; 7] = ["LAUNCH", "PLAY", "PAUSE", "EJECT", "SAVE", "LOAD", "CHEATS"];
-    let mut buttons = Vec::new();
-    let fh = fb_h(fb, fb_w);
-    let mut x = 250u32;
-    let y = 7u32;
-    let bw = 74u32;
-    let bh = toolbar_h - 11;
-    for label in labels {
-        if x + bw > fb_w.saturating_sub(10) {
-            break;
-        }
-        let r = Rect { x, y, w: bw, h: bh };
-        let flag = theme::button_flag(label);
-        let primary = flag[0];
-        let hovered = r.contains(state.mouse.0, state.mouse.1);
-        let active = match label {
-            "PLAY" => state.running && !state.paused,
-            "PAUSE" => state.paused,
-            "CHEATS" => state.cheat_engine_enabled,
-            _ => false,
-        };
-        // Each flag is recognisable on the button *surface*, not only in
-        // a decorative line: hover/active strengthen the tint.
-        let surface = if hovered {
-            theme::mix(PANEL_ALT, primary, 0.55)
-        } else if active {
-            theme::mix(PANEL_ALT, primary, 0.45)
-        } else {
-            theme::mix(PANEL_ALT, primary, 0.30)
-        };
-        fill_rect_rounded(fb, fb_w, x, y, bw, bh, 5, surface);
-        // Wider flag band so the palette reads as part of the control.
-        draw_flag_bar(fb, fb_w, x + 1, y + bh - 7, bw - 2, 6, flag, true);
-        // Thin top highlight instead of a heavy full border.
-        fill_rect(
-            fb,
-            fb_w,
-            x + 5,
-            y,
-            bw.saturating_sub(10),
-            1,
-            if hovered {
-                theme::TRANS_WHITE
-            } else {
-                theme::mix(primary, theme::TRANS_WHITE, 0.45)
-            },
-        );
-        // Flag-coloured stripe along the bottom of each button.
-        draw_flag_bar(fb, fb_w, x + 1, y + bh - 4, bw - 2, 3, flag, true);
-        let tw = text_width(label, 1);
-        draw_text(
-            fb,
-            fb_w,
-            fh,
-            x + (bw - tw) / 2,
-            y + (bh - 11) / 2,
-            label,
-            if hovered {
-                theme::TRANS_WHITE
-            } else {
-                theme::TEXT
-            },
-            1,
-        );
-        buttons.push((r, label));
-        x += bw + 8;
+/// Dimmed backdrop plus centered settings dialog.
+fn draw_settings_modal(fb: &mut Framebuffer, w: u32, h: u32, state: &WindowedGuiState) {
+    for px in fb.as_chunks_mut::<4>().0 {
+        px[0] = px[0].saturating_mul(2) / 3;
+        px[1] = px[1].saturating_mul(2) / 3;
+        px[2] = px[2].saturating_mul(2) / 3;
     }
-
-    // Status pill, right-aligned.
-    let status = if state.paused {
-        "PAUSED"
-    } else if state.running {
-        "RUNNING"
-    } else {
-        "IDLE"
-    };
-    let status_color = if state.paused {
-        RED
-    } else if state.running {
-        GREEN
-    } else {
-        GRAY
-    };
-    let sw = text_width(status, 1);
-    draw_text(
-        fb,
-        fb_w,
-        fh,
-        fb_w.saturating_sub(sw + 12),
-        13,
-        status,
-        status_color,
-        1,
-    );
-    buttons
+    let pw = 520u32;
+    let ph = 420u32;
+    let px = w.saturating_sub(pw) / 2;
+    let py = h.saturating_sub(ph) / 2;
+    fill_rect_rounded(fb, w, px, py, pw, ph, 14, PANEL);
+    draw_flag_bar(fb, w, px + 1, py + 1, pw - 2, 4, &theme::TRANS_FLAG, true);
+    draw_text(fb, w, h, px + 26, py + 30, "SETTINGS", WHITE, 2);
+    let rows = settings_rows(state);
+    let end = kv_rows(fb, w, h, px + 26, py + 84, pw - 52, &rows);
+    draw_text(fb, w, h, px + 26, end + 10, "PRESS O TO CLOSE", DIM, 1);
 }
-
-/// Draw a flag as `n` equal stripes, horizontally stacked (`vertical=false`)
-/// or side by side (`vertical=true`).
+fn draw_banner(fb: &mut Framebuffer, w: u32, h: u32, state: &WindowedGuiState) {
+    let y = TOP_H + HEAD_H;
+    fill_rect(
+        fb,
+        w,
+        0,
+        y,
+        w,
+        32,
+        theme::mix(PANEL, theme::BISEXUAL[0], 0.35),
+    );
+    let msg = format!(
+        "SOFTWARE RENDERER  -  {}",
+        truncate(&state.software_message.to_uppercase(), 90)
+    );
+    draw_text(fb, w, h, MARGIN, y + 9, &msg, TEXT, 1);
+}
 #[allow(clippy::too_many_arguments)]
 fn draw_flag_bar(
     fb: &mut Framebuffer,
@@ -798,411 +1048,6 @@ fn draw_flag_bar(
             fill_rect(fb, fb_w, x, sy, w, sh, *color);
         }
     }
-}
-
-fn fb_h(fb: &[u8], w: u32) -> u32 {
-    (fb.len() / 4 / w.max(1) as usize) as u32
-}
-
-fn render_sidebar(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h: u32,
-    state: &WindowedGuiState,
-    sidebar_w: u32,
-    top: u32,
-) -> Vec<(Rect, usize)> {
-    draw_text(fb, fb_w, fb_h, 12, top + 8, "LIBRARY", ACCENT, 1);
-    draw_flag_bar(
-        fb,
-        fb_w,
-        8,
-        top + 19,
-        sidebar_w.saturating_sub(16),
-        2,
-        &theme::TRANS_FLAG,
-        true,
-    );
-    let mut rows = Vec::new();
-    let row_h = 26u32;
-    let mut y = top + 26;
-    for (i, g) in state.games.iter().enumerate() {
-        if y + row_h > fb_h {
-            break;
-        }
-        let r = Rect {
-            x: 6,
-            y,
-            w: sidebar_w - 12,
-            h: row_h - 4,
-        };
-        if i == state.selected_game {
-            // Tinted row with a blue→pink gradient marker on the left.
-            fill_rect_rounded(
-                fb,
-                fb_w,
-                r.x,
-                r.y,
-                r.w,
-                r.h,
-                4,
-                theme::mix(PANEL_ALT, theme::TRANS_BLUE, 0.30),
-            );
-            for sy in 0..r.h {
-                let t = sy as f32 / r.h.max(1) as f32;
-                fill_rect(fb, fb_w, r.x, r.y + sy, 4, 1, theme::trans_gradient(t));
-            }
-            fill_rect(
-                fb,
-                fb_w,
-                r.x + 4,
-                r.y + r.h - 1,
-                r.w - 4,
-                1,
-                theme::TRANS_PINK,
-            );
-        } else {
-            fill_rect_rounded(fb, fb_w, r.x, r.y, r.w, r.h, 4, PANEL_ALT);
-        }
-        let label = truncate(&g.title.to_uppercase(), 26);
-        draw_text(
-            fb,
-            fb_w,
-            fb_h,
-            r.x + (if i == state.selected_game { 10 } else { 8 }),
-            r.y + 8,
-            &label,
-            if i == state.selected_game {
-                theme::TRANS_WHITE
-            } else {
-                TEXT
-            },
-            1,
-        );
-        rows.push((r, i));
-        y += row_h;
-    }
-    if state.games.is_empty() {
-        draw_text(fb, fb_w, fb_h, 14, top + 60, "NO GAMES FOUND", GRAY, 1);
-        draw_text(fb, fb_w, fb_h, 14, top + 76, "ADD .ISO FILES", GRAY, 1);
-        draw_text(fb, fb_w, fb_h, 14, top + 90, "OR USE --MOUNT", GRAY, 1);
-    }
-    rows
-}
-
-fn render_info_panel(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h: u32,
-    state: &WindowedGuiState,
-    x: u32,
-    top: u32,
-    w: u32,
-) {
-    draw_text(fb, fb_w, fb_h, x + 12, top + 10, "PERFORMANCE", ACCENT, 1);
-    draw_flag_bar(
-        fb,
-        fb_w,
-        x + 12,
-        top + 19,
-        w.saturating_sub(24),
-        2,
-        &theme::TRANS_FLAG,
-        true,
-    );
-    if !state.gpu_label.is_empty() {
-        draw_text(fb, fb_w, fb_h, x + 12, top + 22, "GPU API", GRAY, 1);
-        draw_text(
-            fb,
-            fb_w,
-            fb_h,
-            x + 12,
-            top + 34,
-            &truncate(&state.gpu_label.to_uppercase(), 24),
-            ACCENT,
-            1,
-        );
-    }
-    let mut y = top + 58;
-    let rows: [(String, String); 5] = [
-        ("FPS".into(), format!("{:.0}", state.fps)),
-        ("CPU".into(), format!("{:.0}%", state.cpu_usage * 100.0)),
-        ("GPU".into(), format!("{:.0}%", state.gpu_usage * 100.0)),
-        (
-            "RAM".into(),
-            format!("{} MB", state.memory_usage / 1_048_576),
-        ),
-        ("SLOTS".into(), state.save_slots.len().to_string()),
-    ];
-    for (i, (label, value)) in rows.into_iter().enumerate() {
-        draw_text(fb, fb_w, fb_h, x + 12, y, &label, GRAY, 1);
-        // Alternate trans blue / pink for a lively but readable panel.
-        let value_color = if i % 2 == 0 {
-            theme::TRANS_BLUE
-        } else {
-            theme::TRANS_PINK
-        };
-        draw_text(
-            fb,
-            fb_w,
-            fb_h,
-            (x + w).saturating_sub(12 + text_width(&value, 1)),
-            y,
-            &value,
-            value_color,
-            1,
-        );
-        y += 22;
-    }
-
-    y += 14;
-    draw_text(fb, fb_w, fb_h, x + 12, y, "CONTROLS", DIM_ACCENT, 1);
-    y += 22;
-    for line in [
-        "ESC  PAUSE",
-        "F1   SHOT",
-        "F5   SAVE",
-        "F9   LOAD",
-        "E    EJECT",
-        "C    CHEAT",
-        "Q    QUIT",
-    ] {
-        draw_text(fb, fb_w, fb_h, x + 12, y, line, TEXT, 1);
-        y += 18;
-    }
-
-    // Guest console output (Phase 18): last launch's stdout/kernel log.
-    if !state.console_log.is_empty() {
-        y += 10;
-        draw_text(fb, fb_w, fb_h, x + 12, y, "CONSOLE", DIM_ACCENT, 1);
-        y += 16;
-        for line in state.console_log.iter().rev().take(6).rev() {
-            if y + 14 > fb_h {
-                break;
-            }
-            draw_text(fb, fb_w, fb_h, x + 12, y, &truncate(line, 26), GRAY, 1);
-            y += 14;
-        }
-    }
-}
-
-/// Cover grid for the Game Library view.
-fn render_cover_grid(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h_px: u32,
-    state: &WindowedGuiState,
-    area: &Rect,
-    layout: &mut UiLayout,
-) {
-    use crate::gui::thumbnails;
-    panel_heading(fb, fb_w, fb_h_px, area, "GAME LIBRARY");
-    let query = state.search.trim().to_ascii_lowercase();
-    let games: Vec<(usize, &crate::gui::GameListItem)> = state
-        .games
-        .iter()
-        .enumerate()
-        .filter(|(_, g)| query.is_empty() || g.title.to_ascii_lowercase().contains(&query))
-        .collect();
-    if games.is_empty() {
-        draw_text(
-            fb,
-            fb_w,
-            fb_h_px,
-            area.x + 18,
-            area.y + 64,
-            "NO GAMES MATCH",
-            GRAY,
-            1,
-        );
-        return;
-    }
-    let cols = ((area.w.saturating_sub(24)) / 156).clamp(1, 6);
-    let cell_w = (area.w.saturating_sub(24) / cols).min(180);
-    let img_h = (cell_w * 3 / 4).max(40);
-    let cell_h = img_h + 26;
-    let loader = thumbnails::loader();
-    for (slot, (index, game)) in games.iter().enumerate() {
-        let col = slot as u32 % cols;
-        let row = slot as u32 / cols;
-        let x = area.x + 12 + col * cell_w;
-        let y = area.y + 52 + row * cell_h;
-        if y + cell_h > area.y + area.h {
-            break;
-        }
-        let r = Rect {
-            x,
-            y,
-            w: cell_w.saturating_sub(6),
-            h: cell_h.saturating_sub(4),
-        };
-        let selected = *index == state.selected_game;
-        fill_rect_rounded(
-            fb,
-            fb_w,
-            r.x,
-            r.y,
-            r.w,
-            r.h,
-            5,
-            if selected {
-                theme::mix(PANEL_ALT, theme::TRANS_BLUE, 0.28)
-            } else {
-                PANEL_ALT
-            },
-        );
-        // Cover image, async-loaded and cached; placeholder on miss.
-        let cover = game.cover_art.as_ref().and_then(|path| {
-            let cache = loader.cache();
-            if cache.get(path).is_none() {
-                loader.queue(path.clone());
-            }
-            cache.get(path).flatten()
-        });
-        let image = cover
-            .map(|img| thumbnails::cover_fit(&img, r.w, img_h))
-            .unwrap_or_else(|| thumbnails::placeholder(r.w, img_h));
-        blit_rgba(
-            fb,
-            fb_w,
-            fb_h_px,
-            &image.pixels,
-            image.width as usize,
-            image.height as usize,
-            r.x,
-            r.y,
-        );
-        if selected {
-            draw_flag_bar(
-                fb,
-                fb_w,
-                r.x,
-                r.y + img_h - 3,
-                r.w,
-                3,
-                &theme::TRANS_FLAG,
-                true,
-            );
-        }
-        draw_text(
-            fb,
-            fb_w,
-            fb_h_px,
-            r.x + 4,
-            r.y + img_h + 4,
-            &truncate(&game.title.to_uppercase(), (r.w / 8) as usize),
-            if selected { theme::TRANS_WHITE } else { TEXT },
-            1,
-        );
-        layout.covers.push((r, *index));
-    }
-}
-
-fn render_preview_area(
-    fb: &mut Framebuffer,
-    fb_w: u32,
-    fb_h: u32,
-    state: &WindowedGuiState,
-    area: &Rect,
-) {
-    fill_rect(fb, fb_w, area.x, area.y, area.w, area.h, theme::INSET);
-    stroke_rect(fb, fb_w, area.x, area.y, area.w, area.h, theme::DIM);
-    let Some(game) = state.selected() else {
-        // Empty-state logo-ish placeholder
-        let msg = "SELECT A GAME";
-        draw_text(
-            fb,
-            fb_w,
-            fb_h,
-            area.x + (area.w.saturating_sub(text_width(msg, 3))) / 2,
-            area.y + area.h / 2,
-            msg,
-            DIM_ACCENT,
-            3,
-        );
-        let sub = "FROM THE LIBRARY SIDEBAR";
-        draw_text(
-            fb,
-            fb_w,
-            fb_h,
-            area.x + (area.w.saturating_sub(text_width(sub, 1))) / 2,
-            area.y + area.h / 2 + 40,
-            sub,
-            GRAY,
-            1,
-        );
-        return;
-    };
-
-    // Render the game preview and blit centered (letterboxed).
-    // Phase 18: when the guest wrote a framebuffer frame, blit *that*
-    // instead of the synthetic preview card. The frame is held in
-    // state across composites, so an empty guest FB keeps the last
-    // frame on screen rather than resetting to black.
-    let (pw, ph) = fit_size(state.preview_size.0, state.preview_size.1, area.w, area.h);
-    let px = if let Some(gf) = &state.guest_frame {
-        super::preview::scale_rgba(
-            &gf.pixels,
-            gf.width as usize,
-            gf.height as usize,
-            pw as usize,
-            ph as usize,
-        )
-    } else {
-        render_game_preview(game, pw, ph)
-    };
-    let ox = area.x + (area.w.saturating_sub(pw)) / 2;
-    let oy = area.y + (area.h.saturating_sub(ph)) / 2;
-    blit_rgba(fb, fb_w, fb_h, &px, pw as usize, ph as usize, ox, oy);
-
-    // Title block under preview: trans stripe + shadowed white title.
-    let title = truncate(&game.title.to_uppercase(), 40);
-    draw_flag_bar(
-        fb,
-        fb_w,
-        area.x + 16,
-        area.y + area.h - 38,
-        area.w.saturating_sub(32).min(160),
-        3,
-        &theme::TRANS_FLAG,
-        true,
-    );
-    draw_text(
-        fb,
-        fb_w,
-        fb_h,
-        area.x + 17,
-        area.y + area.h - 29,
-        &title,
-        theme::TRANS_PINK,
-        2,
-    );
-    draw_text(
-        fb,
-        fb_w,
-        fb_h,
-        area.x + 16,
-        area.y + area.h - 30,
-        &title,
-        theme::TRANS_WHITE,
-        2,
-    );
-    let meta = format!(
-        "{} - {} DISC{}",
-        game.region,
-        game.discs,
-        if game.discs > 1 { "S" } else { "" }
-    );
-    draw_text(
-        fb,
-        fb_w,
-        fb_h,
-        area.x + 16,
-        area.y + area.h - 14,
-        &meta,
-        GRAY,
-        1,
-    );
 }
 
 /// Largest (w,h) with aspect ratio of (aw,ah) fitting inside (max_w,max_h).
@@ -1374,3 +1219,57 @@ pub fn text_width(text: &str, scale: u32) -> u32 {
 // Keep GameListItem referenced for doc links.
 #[allow(unused)]
 fn _doc(_: Option<&GameListItem>) {}
+
+/// Emulation overlay: dimmed backdrop, RESUME and RETURN TO MAIN MENU.
+fn draw_emu_menu(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    state: &WindowedGuiState,
+    layout: &mut UiLayout,
+) {
+    for px in fb.as_chunks_mut::<4>().0 {
+        px[0] = px[0].saturating_mul(2) / 3;
+        px[1] = px[1].saturating_mul(2) / 3;
+        px[2] = px[2].saturating_mul(2) / 3;
+    }
+    let pw = 620u32;
+    let ph = 360u32;
+    let px = w.saturating_sub(pw) / 2;
+    let py = h.saturating_sub(ph) / 2;
+    fill_rect_rounded(fb, w, px, py, pw, ph, 16, PANEL);
+    draw_flag_bar(fb, w, px + 1, py + 1, pw - 2, 4, &theme::TRANS_FLAG, true);
+    draw_text(fb, w, h, px + 32, py + 36, "EMULATION MENU", WHITE, 2);
+    let sub = match state.selected() {
+        Some(game) if state.running => truncate(&game.title.to_uppercase(), 48),
+        _ => "NO GAME RUNNING".to_string(),
+    };
+    draw_text(fb, w, h, px + 32, py + 76, &sub, MUTED, 1);
+
+    let bw = (pw - 64 - GAP) / 2;
+    let by = py + ph - 150;
+    let items = [("RESUME", "PLAY"), ("MAIN MENU", "LAUNCH")];
+    for (i, (label, flag_key)) in items.iter().enumerate() {
+        let r = Rect {
+            x: px + 32 + i as u32 * (bw + GAP),
+            y: by,
+            w: bw,
+            h: 64,
+        };
+        let flag = theme::button_flag(flag_key);
+        let hovered = r.contains(state.mouse.0, state.mouse.1);
+        let pressed = hovered && state.mouse_down;
+        draw_button(fb, w, h, r, label, flag, true, hovered, pressed, false);
+        layout.menu.push((r, label));
+    }
+    draw_text(
+        fb,
+        w,
+        h,
+        px + 32,
+        py + ph - 56,
+        "CTRL + ALT + T OR ESC TO CLOSE",
+        DIM,
+        1,
+    );
+}

@@ -118,7 +118,7 @@ impl WindowApp {
         self.tick_guest();
         // While a guest is running its framebuffer goes straight to the
         // GPU renderer — no software UI composite in the guest path.
-        let guest_frame = if self.state.running {
+        let guest_frame = if self.state.running && !self.state.emu_menu_open {
             self.state.guest_frame.clone()
         } else {
             None
@@ -170,7 +170,14 @@ impl WindowApp {
     fn apply_actions(&mut self) {
         for action in self.input.drain_actions() {
             match action {
-                GuiAction::Pause => self.state.toggle_pause(),
+                GuiAction::Pause => {
+                    if self.state.emu_menu_open {
+                        self.state.emu_menu_open = false;
+                    } else {
+                        self.state.toggle_pause();
+                    }
+                }
+                GuiAction::EmulationMenu => self.state.emu_menu_open = !self.state.emu_menu_open,
                 GuiAction::Screenshot => self.screenshot(),
                 GuiAction::SaveState => self.save_state(),
                 GuiAction::LoadState => self.load_state(),
@@ -425,6 +432,9 @@ impl ApplicationHandler for WindowApp {
                     }
                 }
             }
+            WindowEvent::ModifiersChanged(m) => {
+                self.input.modifiers_changed(m.state());
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let ke: KeyEvent = event;
                 self.input.keyboard_input(&ke);
@@ -467,6 +477,29 @@ impl WindowApp {
         let (mx, my) = self.input.mouse;
         let (mx, my) = (mx as u32, my as u32);
 
+        // The emulation overlay swallows clicks while it is open.
+        if self.state.emu_menu_open {
+            for (rect, label) in &layout.menu {
+                if rect.contains(mx, my) {
+                    match *label {
+                        "RESUME" => self.state.emu_menu_open = false,
+                        "MAIN MENU" => {
+                            self.state.emu_menu_open = false;
+                            self.state.view = GuiView::Home;
+                            if self.state.running && !self.state.paused {
+                                self.state.toggle_pause();
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.input.mouse_down = false;
+                    return;
+                }
+            }
+            self.input.mouse_down = false;
+            return;
+        }
+
         // Top navigation (Home / Library / Emulation / Settings / Logs / About)
         for (rect, label) in &layout.nav {
             if rect.contains(mx, my) {
@@ -487,6 +520,10 @@ impl WindowApp {
         // Toolbar buttons
         for (rect, label) in &layout.buttons {
             if rect.contains(mx, my) {
+                if !ui::button_enabled(label, &self.state) {
+                    self.input.mouse_down = false;
+                    return;
+                }
                 match *label {
                     "LAUNCH" => self.launch(),
                     "PLAY" | "PAUSE" => self.state.toggle_pause(),
@@ -495,6 +532,24 @@ impl WindowApp {
                     "LOAD" => self.load_state(),
                     "CHEATS" => self.state.toggle_cheats(),
                     _ => {}
+                }
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+        // Recently played entries (home view)
+        for (rect, idx) in &layout.recent {
+            if rect.contains(mx, my) {
+                self.state.selected_game = *idx;
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+        // Log filter chips (diagnostics view)
+        for (rect, label) in &layout.filters {
+            if rect.contains(mx, my) {
+                if let Some(filter) = state::LogFilter::parse(label) {
+                    self.state.log_filter = filter;
                 }
                 self.input.mouse_down = false;
                 return;

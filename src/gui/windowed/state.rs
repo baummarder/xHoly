@@ -124,6 +124,8 @@ pub struct WindowedGuiState {
     pub software_message: String,
     /// Settings panel visibility.
     pub settings_open: bool,
+    /// Emulation overlay (Ctrl+Alt+T) with return-to-main-menu.
+    pub emu_menu_open: bool,
     /// Configured FPS limit (mirrored for the settings panel).
     pub fps_limit: Option<u32>,
     /// Configured vsync flag.
@@ -163,13 +165,14 @@ impl Default for WindowedGuiState {
             memory_usage: 0,
             save_slots: Vec::new(),
             cheat_engine_enabled: false,
-            resolution: (1280, 720),
+            resolution: (1920, 1080),
             preview_size: (320, 180),
             theme: GuiTheme::Dark,
             gpu_label: String::new(),
             software_mode: false,
             software_message: String::new(),
             settings_open: false,
+            emu_menu_open: false,
             fps_limit: None,
             vsync: true,
             fullscreen: false,

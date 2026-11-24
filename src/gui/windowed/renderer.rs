@@ -79,7 +79,9 @@ impl WgpuRenderer {
             .formats
             .iter()
             .copied()
-            .find(|f| f.is_srgb())
+            // UI colours are written as final sRGB bytes, so prefer a non-sRGB
+            // surface; an sRGB surface would brighten (wash out) every colour.
+            .find(|f| !f.is_srgb())
             .unwrap_or(caps.formats[0]);
         // FramePacer maps vsync on/off onto the best available mode.
         let probe = crate::gui::FramePacer::new(60, vsync);

@@ -91,7 +91,7 @@ fn software_warning_banner_shows() {
     };
     let (fb, _) = ui::composite(&s, 800, 500);
     // Banner row (just under the toolbar) is a bisexual-pink tint.
-    let i = (40 * 800 + 400) * 4;
+    let i = (144 * 800 + 400) * 4;
     let expected = theme::mix(theme::PANEL, theme::BISEXUAL[0], 0.35);
     assert_eq!(&fb[i..i + 3], &expected[..3]);
 }
@@ -108,7 +108,7 @@ fn redesigned_navigation_has_six_views() {
     );
     for (rect, _) in &layout.nav {
         assert!(rect.w > 0 && rect.h > 0);
-        assert!(rect.y >= 34 && rect.y < 60, "nav sits below the toolbar");
+        assert!(rect.y < 48, "nav sits in the top bar");
     }
 }
 

@@ -86,19 +86,19 @@ pub const LESBIAN: [Rgba; 5] = [
 // --- Neutral surfaces ------------------------------------------------------
 
 /// Deep blue-black window background.
-pub const BG: Rgba = [0x12, 0x16, 0x22, 0xFF];
+pub const BG: Rgba = [0x14, 0x16, 0x1C, 0xFF];
 /// Raised panel surface.
-pub const PANEL: Rgba = [0x1D, 0x24, 0x34, 0xFF];
+pub const PANEL: Rgba = [0x1C, 0x1F, 0x27, 0xFF];
 /// Alternating / button surface.
-pub const PANEL_ALT: Rgba = [0x27, 0x31, 0x46, 0xFF];
+pub const PANEL_ALT: Rgba = [0x27, 0x2B, 0x36, 0xFF];
 /// Inset preview well.
-pub const INSET: Rgba = [0x0D, 0x11, 0x1B, 0xFF];
+pub const INSET: Rgba = [0x10, 0x12, 0x18, 0xFF];
 /// Bright body text.
-pub const TEXT: Rgba = [0xF3, 0xF6, 0xFF, 0xFF];
+pub const TEXT: Rgba = [0xF2, 0xF4, 0xF8, 0xFF];
 /// Secondary text.
-pub const MUTED: Rgba = [0x9E, 0xAC, 0xC6, 0xFF];
+pub const MUTED: Rgba = [0x9A, 0xA1, 0xB2, 0xFF];
 /// Section-label text.
-pub const DIM: Rgba = [0x70, 0x82, 0xA3, 0xFF];
+pub const DIM: Rgba = [0x5C, 0x63, 0x75, 0xFF];
 
 /// Toolbar button → flag palette. The trans flag is the primary action;
 /// every other button carries a different LGBTQ+ flag.

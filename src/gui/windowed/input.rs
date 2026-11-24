@@ -28,6 +28,8 @@ pub enum GuiAction {
     ToggleFullscreen,
     /// Toggle the settings panel.
     ToggleSettings,
+    /// Ctrl+Alt+T: open or close the emulation menu.
+    EmulationMenu,
     /// Quit the app.
     Quit,
 }
@@ -35,6 +37,8 @@ pub enum GuiAction {
 /// Aggregated input state for one frame.
 #[derive(Debug, Default)]
 pub struct InputState {
+    /// Current keyboard modifiers (Ctrl/Alt/Shift).
+    modifiers: winit::keyboard::ModifiersState,
     /// Actions triggered since the last frame.
     pub actions: Vec<GuiAction>,
     /// Mouse position (physical pixels).
@@ -65,7 +69,21 @@ impl InputState {
     }
 
     /// Map a winit keyboard event to GUI actions and guest buttons.
+    /// Track Ctrl/Alt/Shift so combinations can be recognised.
+    pub fn modifiers_changed(&mut self, m: winit::keyboard::ModifiersState) {
+        self.modifiers = m;
+    }
+
     pub fn keyboard_input(&mut self, event: &KeyEvent) {
+        // Ctrl+Alt+T opens the emulation menu (return to main menu).
+        if event.state == ElementState::Pressed
+            && self.modifiers.control_key()
+            && self.modifiers.alt_key()
+            && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("t"))
+        {
+            self.actions.push(GuiAction::EmulationMenu);
+            return;
+        }
         let bit = Self::guest_bit(&event.logical_key);
         if bit != 0 {
             if event.state == ElementState::Pressed {
