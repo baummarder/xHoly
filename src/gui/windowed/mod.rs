@@ -21,6 +21,7 @@ use crate::gui::gpu_api_detector::{self, GpuApi, GpuApiPreference};
 use crate::gui::native_gpu_backend::NativeGpuBackend;
 use crate::gui::renderer::GuiFrameRenderer;
 use crate::gui::{FramePacer, GameListItem, GuiConfig};
+use crate::presence::{ConsoleGeneration, NoopPresence, PresenceSink, PresenceState};
 use input::{GuiAction, InputState};
 use state::WindowedGuiState;
 use std::sync::Arc;
@@ -49,6 +50,8 @@ pub struct WindowApp {
     /// Persistent guest session while a game is running (Phase 22).
     /// Boxed so the kernel's self-pointers stay valid.
     session: Option<Box<GuestSession>>,
+    /// Shared Discord presence sink (no-op when not configured).
+    presence: Arc<dyn PresenceSink>,
     /// Set when the app should exit.
     pub should_exit: bool,
 }
@@ -58,6 +61,10 @@ impl WindowApp {
     ///
     /// `backends` restricts the wgpu instance to the detected GPU API.
     pub fn new(config: GuiConfig, backends: wgpu::Backends, gpu_api: GpuApi) -> Self {
+        let presence: Arc<dyn PresenceSink> = config
+            .presence
+            .clone()
+            .unwrap_or_else(|| Arc::new(NoopPresence));
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends,
             ..Default::default()
@@ -87,6 +94,7 @@ impl WindowApp {
             slow_frames: 0,
             pacer,
             session: None,
+            presence,
             should_exit: false,
         }
     }
@@ -222,10 +230,20 @@ impl WindowApp {
             return;
         };
         self.push_log(&format!("xHoly: launching {}", path.display()));
+        // Only the visible title is reported — never the local path.
+        let game_name = self
+            .state
+            .selected()
+            .map(|g| g.title.clone())
+            .unwrap_or_else(|| "a game".into());
+        self.presence.update(PresenceState::Loading {
+            game: game_name.clone(),
+        });
         let image = match crate::core::loader::load_game(&path) {
             Ok(image) => image,
             Err(e) => {
                 self.push_log(&format!("xHoly: launch failed: {e}"));
+                self.presence.update(PresenceState::MainMenu);
                 return;
             }
         };
@@ -233,6 +251,7 @@ impl WindowApp {
             Ok(session) => session,
             Err(e) => {
                 self.push_log(&format!("xHoly: launch failed: {e}"));
+                self.presence.update(PresenceState::MainMenu);
                 return;
             }
         };
@@ -247,6 +266,10 @@ impl WindowApp {
         ));
         self.session = Some(session);
         self.state.running = true;
+        self.presence.update(PresenceState::Emulating {
+            game: game_name,
+            console: ConsoleGeneration::XboxSeriesXS,
+        });
     }
 
     /// Build guest input from the GUI's current held keys + mouse.
@@ -299,6 +322,20 @@ impl WindowApp {
         if let Some(mut session) = self.session.take() {
             self.drain_guest_output(&mut session);
             self.session = Some(session);
+        }
+        if self.state.running {
+            let game = self
+                .state
+                .selected()
+                .map(|g| g.title.clone())
+                .unwrap_or_else(|| "a game".into());
+            // Deduped by the presence controller — safe to call per frame.
+            self.presence.update(PresenceState::Emulating {
+                game,
+                console: ConsoleGeneration::XboxSeriesXS,
+            });
+        } else {
+            self.presence.update(PresenceState::MainMenu);
         }
     }
 

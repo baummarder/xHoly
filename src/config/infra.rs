@@ -5,6 +5,7 @@
 //! cheats, benchmark, debug, cloud. All serde-friendly so configs
 //! round-trip through TOML/JSON.
 
+use crate::presence::DiscordSettings;
 use serde::{Deserialize, Serialize};
 
 /// Root infra config — every subsystem gets a section.
@@ -18,6 +19,8 @@ pub struct InfraConfig {
     pub benchmark: BenchmarkSection,
     pub debug: DebugSection,
     pub cloud: CloudSection,
+    /// Discord Rich Presence (disabled entirely when application_id is empty).
+    pub discord: DiscordSettings,
 }
 
 /// Save-system settings.

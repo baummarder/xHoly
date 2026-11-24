@@ -25,6 +25,12 @@ show_memory = true
 [cloud]
 enabled = false
 token_env = "XHOLY_CLOUD_TOKEN"
+
+[discord]
+enabled = true
+application_id = ""
+show_game_name = true
+show_generation = true
 "#;
 
 #[cfg(test)]

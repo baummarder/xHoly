@@ -1,5 +1,6 @@
 use clap::Parser;
 use std::path::PathBuf;
+use std::sync::Arc;
 use xholy::config::Config;
 use xholy::gui::{GpuApiPreference, GuiConfig, GuiTheme};
 use xholy::optical::{detect_drives, game_scanner, VirtualDrive};
@@ -173,6 +174,10 @@ struct Args {
     /// Config file path (default: ~/.config/xholy/config.toml)
     #[arg(long)]
     config: Option<PathBuf>,
+
+    /// Disable Discord Rich Presence for this session.
+    #[arg(long)]
+    no_discord_rpc: bool,
 }
 
 /// Parse "WxH" (e.g. "1280x720", "1920X1080") into (w, h).
@@ -184,6 +189,17 @@ fn parse_resolution(s: &str) -> Option<(u32, u32)> {
 fn main() {
     env_logger::init();
     let args = Args::parse();
+
+    // Discord Rich Presence: shared, non-blocking sink. The worker only
+    // connects when a real Application ID is configured and the feature
+    // was not disabled via CLI.
+    use xholy::presence::{Presence, PresenceSink, PresenceState};
+    let mut discord_settings = xholy::presence::load_settings(args.config.as_deref());
+    if args.no_discord_rpc {
+        discord_settings.enabled = false;
+    }
+    let presence: Arc<dyn PresenceSink> = Arc::new(Presence::new(discord_settings));
+    presence.update(PresenceState::MainMenu);
 
     // Easter egg: once-per-session trans start screen before any real
     // initialization (GUI/game/headless). Debug builds get the minimal
@@ -246,6 +262,17 @@ fn main() {
     // Phase 8: game execution on the ARM64 interpreter + kernel stub.
     if let Some(path) = &args.game {
         let steps = args.max_steps.unwrap_or(1_000_000);
+        let game_name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "a game".into());
+        presence.update(PresenceState::Loading {
+            game: game_name.clone(),
+        });
+        presence.update(PresenceState::Emulating {
+            game: game_name,
+            console: xholy::presence::ConsoleGeneration::XboxSeriesXS,
+        });
         match xholy::core::execution::run_game_path(path, steps) {
             Ok(report) => {
                 println!("xHoly: guest exited after {} instructions", report.steps);
@@ -255,9 +282,11 @@ fn main() {
                 for line in &report.kernel_log {
                     eprintln!("xHoly[kernel]: {line}");
                 }
+                presence.update(PresenceState::MainMenu);
                 return;
             }
             Err(e) => {
+                presence.update(PresenceState::MainMenu);
                 eprintln!("xHoly: game execution failed: {e}");
                 std::process::exit(1);
             }
@@ -271,6 +300,7 @@ fn main() {
     if gui_mode || tui_mode || gui_headless {
         let mut gui_config = GuiConfig {
             preferred_api: gpu_pref,
+            presence: Some(presence.clone()),
             ..Default::default()
         };
         if let Some(f) = args.fps_limit {

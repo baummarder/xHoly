@@ -33,11 +33,20 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 winit = "0.30"
 wgpu = "24"
+# Maintained cross-platform Discord IPC client (MIT, v1.1.0).
+discord-rich-presence = "1.1.0"
 
 [features]
 default = []
-# Phase-1 ARM64 interpreter stub (always compiled; flag kept for CLI compat)
+# Reserved for Phase 24C (isolation of the Phase-1 ARM64 scaffold). Currently
+# has no code effect — no `cfg(feature = "legacy-arm64")` exists yet.
+legacy-arm64 = []
+# Compatibility alias for the former cpu-stub flag. Intentionally empty: the
+# old flag gated nothing, so pulling in another feature would be misleading.
 cpu-stub = []
+# Xbox 360 leftovers (PowerPC decoder, Xenia XAM ordinals). Outside the target
+# scope; gates core::ppc and core::kernel::xam_abi.
+legacy-xbox360 = []
 
 [build-dependencies]
 cc = "1"

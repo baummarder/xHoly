@@ -172,6 +172,8 @@ pub struct GuiConfig {
     /// Post-processing configuration (Phase 9): bloom, tone mapping,
     /// anti-aliasing. Ignored by the software renderer.
     pub postfx: PostFxConfig,
+    /// Shared presence sink supplied by the host app. `None` = no-op.
+    pub presence: Option<std::sync::Arc<dyn crate::presence::PresenceSink>>,
 }
 
 impl Default for GuiConfig {
@@ -193,6 +195,7 @@ impl Default for GuiConfig {
             theme: GuiTheme::Dark,
             preferred_api: GpuApiPreference::Auto,
             postfx: PostFxConfig::default(),
+            presence: None,
         }
     }
 }

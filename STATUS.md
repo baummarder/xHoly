@@ -257,6 +257,18 @@ Withdrawn: the progress percentage (62 %) were not derived from tests and are no
   exports, favicon
 - [x] Docs: README, INSTALL, CONTRIBUTING, CITATION.cff, whitepaper,
   GPU-API + framerate docs, MISSING.md audit
+- [x] **Discord Rich Presence** (`src/presence/`, `discord-rich-presence`
+  1.1.0): getrenntes RPC-Modul mit `PresenceSink`-Schnittstelle, Dedupe,
+  nicht-blockierendem `try_send`-Kanal und Worker-Thread für Connect/
+  Reconnect/Clear. Konfiguration `[discord]` inklusive `enabled`,
+  `application_id` (leerer Platzhalter = keine Verbindung),
+  `show_game_name`, `show_generation`; CLI `--no-discord-rpc`. Nur
+  Anzeigename und Konsolengeneration werden übertragen, keine Pfade oder
+  Benutzernamen. GUI und `Emulator` melden Main Menu / Loading /
+  Emulating / Spielende. Siehe `docs/discord-rich-presence.md`.
+  **Honest limits:** keine eigene Application ID im Repo, kein
+  Join/Spectate, Rate-Limits nicht aktiv gedrosselt, Linux-Tests nur
+  geschrieben (nicht auf Linux-Host ausgeführt).
 - [x] **Phase 24 ScarletX foundations** — four new testable subsystems:
   `core::ppc` decodes/executes a real big-endian PowerPC integer/branch
   subset (addi/addis/ori/lwz/stw/add/or/cmp/mfspr/mtspr/b/bl/bc/blr/sc)

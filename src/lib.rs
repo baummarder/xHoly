@@ -22,6 +22,7 @@ pub mod mod_system;
 pub mod multiplayer;
 pub mod network;
 pub mod optical;
+pub mod presence;
 pub mod runtime;
 pub mod save;
 pub mod shader_cache;
@@ -37,19 +38,43 @@ pub struct Emulator {
     core: core::EmulationCore,
     gpu: gpu::GpuContext,
     config: config::Config,
+    /// Display name only — no local path is ever reported to Discord.
+    game_name: String,
+    /// Shared presence sink (no-op unless supplied by the host app).
+    presence: std::sync::Arc<dyn presence::PresenceSink>,
 }
 
 impl Emulator {
     /// Create an emulator instance with the given game image path.
     pub fn new(image_path: impl AsRef<std::path::Path>, config: config::Config) -> Self {
-        let core = core::EmulationCore::load(image_path.as_ref());
+        let path = image_path.as_ref();
+        let game_name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "a game".into());
+        let core = core::EmulationCore::load(path);
         let gpu = gpu::GpuContext::new(&config);
-        Self { core, gpu, config }
+        Self {
+            core,
+            gpu,
+            config,
+            game_name,
+            presence: std::sync::Arc::new(presence::NoopPresence),
+        }
+    }
+
+    /// Attach a presence sink supplied by the GUI/host application.
+    pub fn set_presence(&mut self, presence: std::sync::Arc<dyn presence::PresenceSink>) {
+        self.presence = presence;
     }
 
     /// Run the emulation loop until the game exits or `max_frames` is hit.
     /// Returns the number of frames rendered.
     pub fn run(&mut self, max_frames: Option<u64>) -> u64 {
+        self.presence.update(presence::PresenceState::Emulating {
+            game: self.game_name.clone(),
+            console: presence::ConsoleGeneration::XboxSeriesXS,
+        });
         let mut frames = 0u64;
         while max_frames.is_none_or(|m| frames < m) {
             let frame = self.core.step_frame(&mut self.gpu);
@@ -64,6 +89,8 @@ impl Emulator {
                 std::thread::sleep(Duration::from_micros(remaining));
             }
         }
+        // Game ended: return to the main-menu presence.
+        self.presence.update(presence::PresenceState::MainMenu);
         frames
     }
 

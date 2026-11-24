@@ -15,6 +15,7 @@ pub mod infra;
 pub mod merge;
 pub mod settings;
 
+pub use crate::presence::{ConsoleGeneration, DiscordSettings, PresenceSink, PresenceState};
 pub use config_file::{load_file, ConfigFileError, ConfigWatcher};
 pub use config_loader::{into, load_effective, CliOverrides};
 pub use defaults::DEFAULTS_TOML;
