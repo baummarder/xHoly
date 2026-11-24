@@ -1,111 +1,88 @@
 # xHoly Technical Whitepaper
 
-*A hybrid Rust/Scala emulation architecture for Xbox Series S|X and Xbox One*
+*A research HLE architecture for Xbox Series X|S on Windows and Linux (x86-64)*
 
-Version 0.1.0 — research scaffold
+Version 0.2.0 (Phase 24B). Replaces the 0.1.0 text, which described Xbox One and ARM64 targets that are no longer part of the project. The binding decisions are in `docs/adr/0001-target-architecture.md`.
 
 ---
 
-## 1. Motivation
+## 1. Scope
 
-Console emulation has converged on a few proven patterns: dynamic binary
-translation (x86↔ARM), API translation layers (D3D→Vulkan/Metal), and
-high-performance memory management. No open project today targets the full
-Xbox One → Xbox Series S|X generation with a single coherent architecture.
+xHoly targets Xbox Series X|S (Gen9 / Scarlett) only. Hosts are Windows x86-64 and Linux x86-64, with equal standing. Xbox 360, Xbox One, ARM64 hosts and macOS are not targets.
 
-xHoly explores a **hybrid-language** design: a Rust core for the
-performance-critical emulation path, and a Scala/JVM runtime for game
-content that benefits from managed execution and the JVM ecosystem, with a
-Scala.js bundle for web deployment.
+The approach is high-level emulation (HLE): platform APIs are reproduced on the host, and guest code is not run through a full hardware model. ScarlettX is the compatibility reference; its source is not copied.
 
-> **Honesty note:** this document describes the *target* architecture. The
-> current codebase is a scaffold implementing subsystem boundaries and
-> build plumbing; translator passes are stubs.
+**Current state:** Research scaffold. No retail title runs. The figures in section 8 are goals, not measurements.
 
 ## 2. System overview
 
 ```
-Game image ──► Loader ──► CPU translator ──► Memory manager
-                              │                  │
-                              ▼                  ▼
-                        GPU translator      I/O subsystem
-                        (DXIL→SPIRV/        (input, Kinect,
-                         GLSL/WGSL)          storage, audio)
-                              │
-                              ▼
-                     Backend: wgpu / software
-                              │
-                              ▼
-                        Display + audio out
-
-Scala runtime ◄──stdio JSON──► Rust host   (JVM/Scala.js game modules)
+Game package ──► Package loader (PE32+, planned 24D)
+                     │
+                     ▼
+              Guest x86-64 code ──► ABI bridges (Win64 ↔ host ABI, 24E)
+                     │                       │
+                     ▼                       ▼
+            Kernel / API tables        GPU translation (24F)
+            (verified ABI only)              │
+                     │                       ▼
+                     ▼             Backend: D3D12 (Windows)
+            Memory model                     Vulkan (Linux)
+                     │
+                     ▼
+                I/O: input, audio, storage
 ```
 
-## 3. CPU translation
+The Scala runtime is outside the target scope. Keeping it is an open decision (ADR 0001, question 3).
 
-Xbox One (Jaguar, x86-64) and Series X|S (Zen 2, x86-64) share the same
-ISA family, simplifying translation: the translator lowers guest x86-64
-to host x86-64/aarch64 via a threaded-code or JIT pipeline.
+## 3. CPU execution
 
-Planned stages:
+Xbox Series X|S executes x86-64 (Zen 2) PE32+ code. The target is native execution of that code on an x86-64 host, with Xbox ABI bridges where guest and host calling conventions differ. This avoids a full CPU emulation.
 
-1. **Decoder** — x86-64 instruction decode (length, prefixes, ModRM/SIB).
-2. **IR** — lift to a small SSA IR with explicit flags.
-3. **Lowering** — emit host machine code (Cranelift-style) or threaded
-   interpreter for cold paths.
-4. **Block linking** — direct-block chaining for hot loops.
+On Windows, guest and host share the Win64 calling convention. On Linux, PE code uses Win64 while the host uses SysV, so thunks are required. Their correctness is tested in phase 24E.
 
-The scaffold ships an interpreter skeleton over a minimal opcode subset
-so the memory/GPU/timing pipeline can be exercised deterministically.
+The existing x86-64 decoder and the x86-64→WASM JIT are research subsets. Whether they become the CPU path or are replaced by native mapping is decided in phase 24E.
+
+The AArch64 interpreter remains only as a test harness. It does not model any Xbox target.
 
 ## 4. GPU translation
 
-Xbox titles render through Direct3D 12 on RDNA2 (Series X|S) or AMD GCN
-(Xbox One). The translation layer:
+Xbox Series X|S renders through Direct3D 12 on RDNA2. The translation layer maps guest D3D12 calls to a host backend: D3D12 on Windows, Vulkan on Linux.
 
-- **Shader bytecode**: DXIL/DXBC → SPIR-V (Vulkan), GLSL (OpenGL), or WGSL
-  (WebGPU/Metal). Ray-tracing, mesh/amplification shaders, and variable
-  rate shading are first-class `ShaderStage`/`ShaderFeatures` types.
-- **Command stream**: D3D12 command lists → backend render passes.
-- **Fallback**: a software rasterizer (barycentric triangle path exists)
-  for headless/CI and Pi-class hosts.
+Shader input is DXIL. Precompiled RDNA2 `XS2` microcode is not supported and is rejected with an explicit error. The current DXIL parser is not connected to a draw path.
+
+The software rasterizer exists for headless tests only and is not a supported compatibility path.
 
 ## 5. Memory
 
-Guest memory mimics the Xbox kernel layout: a flat addressable window
-with reserved regions for hypervisor, GPU carve-out, title memory, and an
-I/O aperture (`src/core/memory.rs`). The scaffold uses a 1 GiB resident
-arena; the production design calls for sparse/paged allocation over the
-full 16 GiB address space.
+The guest memory model follows the Series X|S unified-memory layout. Exact regions and sizes are not yet verified against a usable source. The 16 GiB figure from version 0.1.0 is not backed by a verified source and is removed. The current implementation is a flat 1 GiB arena with region classification only, without paging or fault handling. Sparse, host-backed paging is planned for phase 24F.
 
-## 6. Scala runtime & compatibility
+## 6. Scala runtime
 
-`scala/` is an sbt `crossProject` (JVM + Scala.js):
-
-- **JVM runtime** (`runtime.Main`): hosts JVM-based game modules,
-  exchanges newline-delimited JSON with the Rust host over stdio
-  (`BridgeMessage` protocol in `src/runtime/scala_bridge.rs`).
-- **Scala.js bundle**: browser deployment shell.
-- **Legacy shims**: `GameLoader.loadLegacy` stubs the compatibility path
-  for older titles (Xbox 360-era managed code, arcade titles).
+The Scala runtime (JVM and Scala.js) and its legacy shims are outside the target scope. The legacy shims were written for Xbox 360-era code and are not part of the Series X|S path. Keeping or removing the runtime is an open decision for the project owner.
 
 ## 7. Configuration
 
-Hybrid schema: Rust `serde` + TOML on the host side; Scala case classes
-mirror the same fields. Config lives at `~/.config/xholy/config.toml`,
-supports named per-game profiles, and is hot-reloaded via `notify`.
+Configuration uses Rust `serde` with TOML, lives at `~/.config/xholy/config.toml`, supports named per-game profiles, and is hot-reloaded via `notify`.
 
-## 8. Performance plan
+## 8. Performance goals (not measured)
 
 | Target | Approach |
 |---|---|
-| 60 FPS @ 4K | wgpu backend + async compute; VRS and mesh shaders where available |
-| <15 ms latency | Frame pipelining, low-latency present, 1000 Hz input polling |
-| Pi 4 support | Software rasterizer + threaded interpreter fallback tier |
+| Frame rate at 1440p and 4K | Native-speed guest execution plus D3D12 or Vulkan backend |
+| Input latency below 15 ms | Low-latency present path, input polling independent of the frame loop |
 
-## 9. Repository & co-authorship
+These are goals. Measured values are added only when a benchmark produces them. `benchmarks/REPORT.md` covers the scaffold baseline only.
 
-Apache-2.0 licensed. AI-agent co-authorship is recorded in commit history; see
-`CONTRIBUTING.md` and `.github/CITATION.cff`.
+## 9. Non-goals
+
+- Xbox 360 (PowerPC, XEX2) and Xbox One.
+- ARM64 and armv7 hosts, including Raspberry Pi.
+- macOS as a host.
+- Compatibility claims without test evidence.
+
+## 10. Repository and co-authorship
+
+Apache-2.0 licensed. AI-agent co-authorship is recorded in commit history; see `CONTRIBUTING.md`, `Agents.md` and `.github/CITATION.cff`.
 
 *Redeem Your Games.*

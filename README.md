@@ -1,21 +1,17 @@
-# xHoly — Xbox Series S|X / Xbox One Emulator
-## Status: 62% — Phase 23/28
-[▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] 62%
-
 <p align="center">
   <img src="xHoly-logo.svg" width="160" alt="xHoly logo"/>
 </p>
 
 <p align="center"><b>Redeem Your Games</b></p>
 
-xHoly is a research emulator/simulator architecture for **Xbox Series S|X** and
-**Xbox One** game images, built on a hybrid **Rust + Scala** stack.
+# xHoly — Xbox Series X|S HLE Emulator (Research)
 
-> **Status: early research scaffold.** This repository implements the
-> project architecture, subsystem boundaries, configuration system, and
-> build pipeline. It is **not** yet a working game emulator — CPU/GPU
-> translation passes are stubs pending further research. See
-> [`docs/whitepaper.md`](docs/whitepaper.md) for the technical roadmap.
+xHoly is a research high-level emulator (HLE) for **Xbox Series X|S** (Gen9) game packages. It runs on **Windows x86-64** and **Linux x86-64**, built on a Rust core with an optional Scala runtime.
+
+> **Status: research scaffold.** No retail title runs yet. The binding target and architecture decisions are in [ROADMAP.md](ROADMAP.md) and [docs/adr/0001-target-architecture.md](docs/adr/0001-target-architecture.md). Earlier progress percentages were not derived from tests and have been withdrawn.
+
+- Target: Xbox Series X|S only.
+- Not supported: Xbox 360, Xbox One, ARM64 hosts, macOS.
 
 ## Architecture
 
@@ -94,8 +90,7 @@ cargo test
 cargo bench
 ```
 
-Produces a single `xholy` binary. Runs on `x86_64`, `aarch64`, and
-`armv7` (Raspberry Pi 4) targets.
+Produces a single `xholy` binary. Supported hosts: Windows x86-64 and Linux x86-64. ARM64 and armv7 are not supported.
 
 ### Scala runtime
 
@@ -134,12 +129,14 @@ xholy --renderer vulkan     # alias for --gpu-api
 xholy --bloom               # bloom post-FX (default on; --no-bloom off)
 xholy --tone-mapping aces   # linear | reinhard | filmic | aces
 xholy --aa fxaa             # off | fxaa | msaa4
-xholy --game game.bin       # run ARM64 guest image headless (Phase 8)
+xholy --game game.bin       # run AArch64 test image headless (Phase 8; test harness, not an Xbox target)
 xholy --game games/minimal  # bundled minimal guest (XEX2 + xboxconfig)
 xholy --native-wm           # native C++ WM demo window (Windows)
 ```
 
-#### Minimal guest game (Phase 17)
+#### Minimal guest game (Phase 17, test fixture)
+
+This AArch64 fixture tests the loader and kernel pipeline. It is not Xbox guest code.
 
 `games/minimal/` is a real on-disk guest image: `default.xex` carries a
 little-endian `XEX2` header (entry RVA, image base, title-id quad) followed
@@ -247,25 +244,20 @@ multiplayer rules, and semaphore/channel deadlock detection.
 
 ## Roadmap
 
-### Phase 23 — Retail-Boot
+### Roadmap
 
-Retail-XEX2-Images sollen booten statt nur zu laden: PowerPC-Befehlssatz
-(NEON/SIMD, Bitmask-Immediates, LDP/STP, Sysregs), echte XAM-Dienste und
-ein Memory-Layer mit Page-Tables. Der aktuelle Stand ist ehrlich in
-[`STATUS.md`](STATUS.md) dokumentiert — Phase 23 ist ein Ziel, kein
-abgeschlossenes Feature.
+The binding roadmap is in [ROADMAP.md](ROADMAP.md). Phase numbers 1 to 24A are historical. Work on PowerPC and Xbox 360 XAM (local commit 0c76865) is outside the target scope.
 
 ## Änderungen in dieser Version
 
-- Neues Icon + Fortschrittsanzeige im README
-
+- Documentation moved to phase 24B (target architecture, ROADMAP, ADR).
 ## Performance targets
 
 | Metric | Target |
 |---|---|
 | Frame rate | 60 FPS @ 1440p/4K |
 | Input latency | < 15 ms |
-| Compatibility | Xbox (2001) → Xbox Series S|X |
+| Compatibility | Xbox Series X\|S (Gen9): goal; no retail title runs yet |
 
 These are goals for the completed translator, not current measurements —
 see `benchmarks/REPORT.md` for the scaffold baseline.

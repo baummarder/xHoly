@@ -43,7 +43,7 @@ See also `Agents.md` for the full agent roster and attribution rules.
 
 - **Rust**: stable toolchain (`cargo build --release`)
 - **Scala**: JDK 17+, sbt 1.10+ (`cd scala && sbt compile`)
-- Targets: `x86_64`, `aarch64`, `armv7` (Raspberry Pi 4)
+- Targets: `x86_64-pc-windows-msvc` and `x86_64-unknown-linux-gnu` (ARM64 and armv7 are not supported)
 
 ## Style
 

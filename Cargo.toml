@@ -2,7 +2,7 @@
 name = "xholy"
 version = "0.1.0"
 edition = "2021"
-description = "xHoly - a research emulator/simulator architecture for Xbox Series S|X and Xbox One titles"
+description = "xHoly - research HLE emulator for Xbox Series X|S titles"
 license = "Apache-2.0"
 repository = "https://github.com/baummarder/xHoly"
 keywords = ["emulator", "xbox", "research"]

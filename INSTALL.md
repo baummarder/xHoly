@@ -75,13 +75,7 @@ cd scala && sbt assembly     # JVM runtime → target/scala-*/xholy-runtime.jar
 | Target | Status |
 |---|---|
 | `x86_64-pc-windows-msvc` | Primary dev target |
-| `x86_64-unknown-linux-gnu` | Supported |
-| `aarch64-apple-darwin` | Supported |
-| `armv7-unknown-linux-gnueabihf` | Raspberry Pi 4 (software backend) |
+| `x86_64-unknown-linux-gnu` | Supported (target host) |
+| `aarch64-*`, `armv7-*` | Not supported (outside target scope) |
 
-Cross-compile examples:
-
-```sh
-rustup target add aarch64-unknown-linux-gnu
-cargo build --release --target aarch64-unknown-linux-gnu
-```
+ARM64 and armv7 cross-compilation is not supported.

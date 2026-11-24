@@ -3,6 +3,12 @@
 Honest feature checklist. xHoly is a **research scaffold**, not a
 working Xbox emulator — see `docs/whitepaper.md` for the roadmap.
 
+## Architecture status (phase 24B)
+
+Target: Xbox Series X|S only, hosted on Windows and Linux x86-64, HLE. See ROADMAP.md and docs/adr/0001-target-architecture.md.
+
+Withdrawn: the progress percentage (62 %) were not derived from tests and are not used anymore. Items below marked as Xbox 360, PowerPC or XAM-360 are outside the target scope. The PowerPC, PTE, Xenia-XAM and ScarletX-GUI work exists only in the local, unpushed commit 0c76865.
+
 ## Works
 
 ### Core (Rust)

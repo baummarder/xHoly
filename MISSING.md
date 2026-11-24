@@ -1,7 +1,6 @@
 # Missing Components Audit
 
-Audit of `xHoly` against the target architecture (Xbox Series S|X + Xbox One
-emulation, hybrid Rust/Scala). Generated 2026-11-21.
+Audit of `xHoly` against the target architecture (Xbox Series X|S HLE on Windows and Linux x86-64; see docs/adr/0001-target-architecture.md). Generated 2026-11-21.
 
 ## 📁 Files Missing
 
