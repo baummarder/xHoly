@@ -123,6 +123,15 @@ impl Pe64Image {
         Some(String::from_utf8_lossy(&self.bytes[start..end]).into_owned())
     }
 
+    /// Resolve an import hint/name table entry to its symbol name.
+    /// The first two bytes are the hint and are skipped.
+    pub fn import_name(&self, rva: u32) -> Option<String> {
+        let section = self.section_at(rva)?;
+        let start = section.raw_pointer as usize + (rva - section.virtual_address) as usize + 2;
+        let end = self.bytes.get(start..)?.iter().position(|b| *b == 0)? + start;
+        Some(String::from_utf8_lossy(&self.bytes[start..end]).into_owned())
+    }
+
     /// Whether the imports suggest an Xbox GDK title rather than a normal
     /// Windows application (evidence-based, never inferred from `.exe`).
     pub fn looks_like_xbox_gdk(&self) -> bool {

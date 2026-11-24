@@ -23,6 +23,7 @@ pub mod multiplayer;
 pub mod network;
 pub mod optical;
 pub mod presence;
+pub mod progress;
 pub mod runtime;
 pub mod save;
 pub mod shader_cache;

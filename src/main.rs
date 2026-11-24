@@ -9,9 +9,20 @@ use xholy::Emulator;
 #[derive(Parser, Debug)]
 #[command(
     name = "xholy",
-    about = "xHoly - Xbox Series S|X / Xbox One emulator (research)"
+    about = "xHoly - Xbox Series X|S HLE emulator (research)"
 )]
 struct Args {
+    /// Print the roadmap progress report (derived from progress.json).
+    #[arg(long)]
+    progress: bool,
+
+    /// Read-only import analysis of a PE32+ executable. The file is never executed.
+    #[arg(long, value_name = "PATH")]
+    analyze: Option<std::path::PathBuf>,
+
+    /// With --analyze: print JSON instead of the text summary.
+    #[arg(long, requires = "analyze")]
+    json: bool,
     /// Path to a game image or disc (e.g. .iso, .xvc, directory)
     image: Option<PathBuf>,
 
@@ -190,6 +201,35 @@ fn main() {
     env_logger::init();
     let args = Args::parse();
 
+    // Read-only commands run before any presence, easter-egg or GPU setup.
+    if args.progress {
+        match xholy::progress::report() {
+            Ok(report) => print!("{}", report.render_text()),
+            Err(e) => {
+                eprintln!("xHoly: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+    if let Some(path) = args.analyze.as_deref() {
+        let registry = xholy::core::hle::HleRegistry::with_known_entries();
+        match xholy::core::loader::import_analyzer::analyze_file(path, &registry) {
+            Ok(report) if args.json => match serde_json::to_string_pretty(&report) {
+                Ok(text) => println!("{text}"),
+                Err(e) => {
+                    eprintln!("xHoly: cannot serialise report: {e}");
+                    std::process::exit(1);
+                }
+            },
+            Ok(report) => print!("{}", report.render_text()),
+            Err(e) => {
+                eprintln!("xHoly: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     // Discord Rich Presence: shared, non-blocking sink. The worker only
     // connects when a real Application ID is configured and the feature
     // was not disabled via CLI.

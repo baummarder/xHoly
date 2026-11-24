@@ -6,12 +6,46 @@
 
 # xHoly — Xbox Series X|S HLE Emulator (Research)
 
-xHoly is a research high-level emulator (HLE) for **Xbox Series X|S** (Gen9) game packages. It runs on **Windows x86-64** and **Linux x86-64**, built on a Rust core with an optional Scala runtime.
+xHoly is a research high-level emulator (HLE) for **Xbox Series X|S** (Gen9) executables. It runs on **Windows x86-64** and **Linux x86-64**, built on a Rust core with an optional Scala runtime.
 
-> **Status: research scaffold.** No retail title runs yet. The binding target and architecture decisions are in [ROADMAP.md](ROADMAP.md) and [docs/adr/0001-target-architecture.md](docs/adr/0001-target-architecture.md). Earlier progress percentages were not derived from tests and have been withdrawn.
+> **Status: experimental research scaffold.** No retail title runs yet. The binding target and architecture decisions are in [ROADMAP.md](ROADMAP.md) and [docs/adr/0001-target-architecture.md](docs/adr/0001-target-architecture.md).
 
-- Target: Xbox Series X|S only.
-- Not supported: Xbox 360, Xbox One, ARM64 hosts, macOS.
+- Primary target: Xbox Series X|S (ADR 0001). Xbox One support is a stated project goal; no Xbox One-specific implementation exists yet.
+- Not supported: Xbox 360 (legacy code only, feature-gated), ARM64 hosts, macOS.
+
+## Project Independence
+
+xHoly is an independent, community-oriented open-source emulator research project.
+
+It is not affiliated with, endorsed by or sponsored by Microsoft, Xbox, Rockstar Games or Take-Two Interactive.
+
+## Experimental Status
+
+xHoly is experimental software under active development.
+
+Retail game compatibility is not guaranteed. Only explicitly tested functionality may be described as working. The progress figures in this README measure roadmap tasks, not game support.
+
+## Microsoft SDK Independence
+
+The architectural goal is to build and run xHoly without requiring an installed Microsoft Xbox GDK or GDKX.
+
+Xbox functionality should be implemented through independently developed HLE components and documented interfaces.
+
+This is a goal, not an audited claim: complete SDK independence has not yet been verified against the project's dependency and build requirements.
+
+## Graphics Architecture
+
+The project aims for a cross-vendor graphics architecture supporting NVIDIA and AMD host GPUs. Host rendering goes through wgpu (Vulkan, OpenGL or a software adapter, auto-detected with `--gpu-api`); Vulkan may be evaluated as a cross-platform backend.
+
+No full Xbox shader compatibility and no working guest GPU translation are claimed. Shader work (DXIL parsing, SPIR-V/WGSL emission) is partial and has not been demonstrated with retail titles.
+
+## Platforms
+
+| Platform | State |
+|---|---|
+| Windows x86-64 | **Implemented and tested** on the development host: unit tests, integration tests, windowed GUI and Discord presence were executed here. |
+| Linux x86-64 | **Build target, partially tested**: the CI workflow (`.github/workflows/ci.yml`, Ubuntu) runs `cargo test` and `cargo clippy`. Not executed in this milestone's local verification. |
+| ARM64 hosts, macOS | **Untested and unsupported.** |
 
 ## Architecture
 
@@ -39,7 +73,7 @@ xHoly is a research high-level emulator (HLE) for **Xbox Series X|S** (Gen9) gam
 | Component | Language | Purpose |
 |---|---|---|
 | Core emulation engine | Rust | CPU translator, memory allocator, frame loop |
-| GPU translation layer | Rust | DXIL→SPIR-V/GLSL/WGSL, software rasterizer fallback |
+| GPU translation layer | Rust | DXIL parsing, SPIR-V/WGSL emission (partial); host frames via wgpu — no guest draw-call translation |
 | Memory management | Rust | Xbox-kernel-style flat guest address space |
 | Audio driver | Rust | WASAPI / Core Audio / ALSA abstraction |
 | I/O subsystem | Rust | Controllers, HID layer, Kinect, storage |
@@ -193,6 +227,20 @@ and `--frame-pacing`.
 ./target/release/xholy game.iso --max-frames 600 --config ~/.config/xholy/config.toml
 ```
 
+### Development reports (read-only)
+
+```sh
+xholy --progress              # roadmap progress derived from progress.json
+xholy --analyze game.exe      # read-only PE32+ import analysis (file is never executed)
+xholy --analyze game.exe --json   # machine-readable compatibility report
+```
+
+`--analyze` only reads the file: it parses the PE32+ import table, compares
+it against the HLE API registry (`src/core/hle/`) and reports implemented,
+partially implemented, unsupported and unknown imports. It never executes
+the executable and never modifies it. Import coverage is **not** game
+compatibility, and no compatibility percentage is reported.
+
 Config persists to `~/.config/xholy/config.toml` and is hot-reloaded on
 change. User-defined profiles live under `[profiles]`.
 
@@ -244,13 +292,30 @@ multiplayer rules, and semaphore/channel deadlock detection.
 
 ## Roadmap
 
-### Roadmap
-
 The binding roadmap is in [ROADMAP.md](ROADMAP.md). Phase numbers 1 to 24A are historical. Work on PowerPC and Xbox 360 XAM (local commit 0c76865) is outside the target scope.
 
-## Änderungen in dieser Version
+## Project Development Progress
 
-- Documentation moved to phase 24B (target architecture, ROADMAP, ADR).
+The figures below are generated from and validated against [`progress.json`](progress.json) by `src/progress.rs` (a unit test fails if this README section goes stale). Run `xholy --progress` for the same report on the command line.
+
+**Overall roadmap completion: 51.5%**
+
+`[▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░] 51.5%`
+
+| Category | Weight | Completion |
+|---|---:|---:|
+| CPU & Execution | 20% | 20.0% |
+| HLE & System Runtime | 20% | 60.0% |
+| GPU & Shader Translation | 20% | 50.0% |
+| Memory & Storage | 10% | 65.0% |
+| Audio & Input | 10% | 50.0% |
+| Game Compatibility & Boot | 15% | 60.0% |
+| GUI & Infrastructure | 5% | 100.0% |
+
+Last verification: 2026-11-24.
+
+Calculation: each task adds `weight x credit` to its category, where credit is 0 for Planned and Blocked, 0.5 for Partially Implemented, and 1 for Implemented and Verified. Task weights total 100 within each category, so the category sum is its completion percentage. Overall completion is the category completion weighted by the category weights. Everything is derived from `progress.json` by `src/progress.rs`. This measures roadmap progress only, not game compatibility, production readiness or retail boot success.
+
 ## Performance targets
 
 | Metric | Target |
@@ -262,9 +327,25 @@ The binding roadmap is in [ROADMAP.md](ROADMAP.md). Phase numbers 1 to 24A are h
 These are goals for the completed translator, not current measurements —
 see `benchmarks/REPORT.md` for the scaffold baseline.
 
+## GTA VI Statement
+
+xHoly is not specifically developed, marketed, promoted or positioned for Grand Theft Auto VI.
+
+The project makes no GTA VI compatibility claims or promises and does not include GTA VI-specific features or assets.
+
+## Trademarks and Copyright
+
+Xbox, Xbox One, Xbox Series X|S, Microsoft, Grand Theft Auto and Rockstar Games are trademarks or property of their respective owners.
+
+All references are descriptive. xHoly is an independent project.
+
+A disclaimer does not replace compliance with applicable copyright, trademark and software laws.
+
 ## License
 
-[Apache License 2.0](LICENSE)
+xHoly's own code is distributed under the [Apache License 2.0](LICENSE).
+
+Third-party dependencies and their respective licenses are documented separately in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). The project's license does not imply any rights to Microsoft SDKs, Xbox games, trademarks or third-party code.
 
 ## Contributing & co-authorship
 

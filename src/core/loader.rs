@@ -19,6 +19,7 @@
 pub mod game_image;
 pub mod game_runner;
 pub mod image_decode;
+pub mod import_analyzer;
 pub mod iso_parser;
 pub mod pe64;
 pub mod xex_parser;

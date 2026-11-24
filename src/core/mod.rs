@@ -5,6 +5,7 @@ pub mod cpu;
 pub mod emulation;
 pub mod execution;
 pub mod gpu;
+pub mod hle;
 pub mod kernel;
 pub mod loader;
 pub mod memory;
