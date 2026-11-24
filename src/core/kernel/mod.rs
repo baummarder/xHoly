@@ -27,6 +27,7 @@ pub mod pte;
 pub mod scheduler;
 pub mod syscall;
 pub mod xam;
+#[cfg(any(test, feature = "legacy-xbox360"))]
 pub mod xam_abi;
 
 pub use console::KernelConsole;

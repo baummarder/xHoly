@@ -28,7 +28,7 @@ token_env = "XHOLY_CLOUD_TOKEN"
 
 [discord]
 enabled = true
-application_id = ""
+application_id = "1574808682527596554"
 show_game_name = true
 show_generation = true
 "#;

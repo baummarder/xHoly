@@ -1,3 +1,4 @@
+//! STATUS: experimental stub, not used by the emulator loop. Decision on the x86-64 path in phase 24E (ADR 0001).
 //! CPU translation pipeline (stub).
 //!
 //! This module defines the translation pipeline the production JIT will

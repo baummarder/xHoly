@@ -6,7 +6,7 @@
 //! free, consistent with the Phase-2 software rasterizer approach.
 
 use super::preview::render_game_preview;
-use super::state::WindowedGuiState;
+use super::state::{GuiView, WindowedGuiState};
 use crate::gui::scarletx::BootStage;
 use crate::gui::GameListItem;
 use crate::theme::{self, Rgba};
@@ -28,10 +28,14 @@ const GREEN: Rgba = theme::RAINBOW[3]; // pride green = "running / ok"
 /// Layout rectangles (in framebuffer pixels) for hit-testing.
 #[derive(Debug, Clone, Default)]
 pub struct UiLayout {
+    /// Top navigation rects paired with their view labels.
+    pub nav: Vec<(Rect, &'static str)>,
     /// Toolbar button rects paired with their labels.
     pub buttons: Vec<(Rect, &'static str)>,
     /// Sidebar game-row rects paired with game indices.
     pub rows: Vec<(Rect, usize)>,
+    /// Cover-grid cells paired with game indices.
+    pub covers: Vec<(Rect, usize)>,
     /// Bounds of the preview area.
     pub preview: Rect,
 }
@@ -102,6 +106,7 @@ pub fn composite(state: &WindowedGuiState, width: u32, height: u32) -> (Framebuf
         2,
     );
     layout.buttons = render_toolbar(&mut fb, w as u32, state, toolbar_h);
+    layout.nav = render_navigation(&mut fb, w as u32, state, toolbar_h);
 
     // Sidebar background + game list
     let list_top = toolbar_h;
@@ -141,7 +146,8 @@ pub fn composite(state: &WindowedGuiState, width: u32, height: u32) -> (Framebuf
         w: prev_w,
         h: prev_h,
     };
-    render_preview_area(&mut fb, w as u32, h as u32, state, &layout.preview);
+    let preview = layout.preview;
+    render_content(&mut fb, w as u32, h as u32, state, &preview, &mut layout);
 
     // Retail-boot progress bar over the preview (Phase 24).
     if let Some(boot) = &state.boot_progress {
@@ -188,6 +194,356 @@ pub fn composite(state: &WindowedGuiState, width: u32, height: u32) -> (Framebuf
     }
 
     (fb, layout)
+}
+
+/// Top navigation strip: six views, one consistent visual language.
+fn render_navigation(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    state: &WindowedGuiState,
+    toolbar_h: u32,
+) -> Vec<(Rect, &'static str)> {
+    let mut items = Vec::new();
+    let nav_y = toolbar_h;
+    let nav_h = 20u32;
+    let gap = 6u32;
+    let bw = (fb_w.saturating_sub(24 + gap * 5)) / 6;
+    if bw < 24 {
+        return items;
+    }
+    for (i, view) in GuiView::ALL.iter().enumerate() {
+        let x = 12 + i as u32 * (bw + gap);
+        let r = Rect {
+            x,
+            y: nav_y,
+            w: bw,
+            h: nav_h,
+        };
+        let active = state.view == *view;
+        let fill = if active {
+            theme::mix(PANEL_ALT, theme::TRANS_BLUE, 0.35)
+        } else {
+            PANEL_ALT
+        };
+        fill_rect(fb, fb_w, x, nav_y, bw, nav_h, fill);
+        // Active underline uses the trans flag; inactive uses a dim line.
+        draw_flag_bar(
+            fb,
+            fb_w,
+            x,
+            nav_y + nav_h - 2,
+            bw,
+            2,
+            if active {
+                &theme::TRANS_FLAG
+            } else {
+                &[DIM_ACCENT]
+            },
+            true,
+        );
+        let label = view.label();
+        let tw = text_width(label, 1);
+        if tw <= bw {
+            draw_text(
+                fb,
+                fb_w,
+                fb_h(fb, fb_w),
+                x + (bw - tw) / 2,
+                nav_y + (nav_h - 7) / 2,
+                label,
+                if active { theme::TRANS_WHITE } else { GRAY },
+                1,
+            );
+        }
+        items.push((r, label));
+    }
+    items
+}
+
+/// Draw the active view's main content area.
+///
+/// The software compositor stays the single source of UI pixels; no
+/// emulation logic runs here. All values come from `WindowedGuiState`.
+fn render_content(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    fb_h_px: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+    layout: &mut UiLayout,
+) {
+    match state.view {
+        GuiView::Emulation => render_preview_area(fb, fb_w, fb_h_px, state, area),
+        GuiView::Library => {
+            if state.running && state.guest_frame.is_some() {
+                render_preview_area(fb, fb_w, fb_h_px, state, area);
+            } else {
+                render_cover_grid(fb, fb_w, fb_h_px, state, area, layout);
+            }
+        }
+        GuiView::Home => render_home(fb, fb_w, fb_h_px, state, area),
+        GuiView::Settings => render_settings_view(fb, fb_w, fb_h_px, state, area),
+        GuiView::Logs => render_logs(fb, fb_w, fb_h_px, state, area),
+        GuiView::About => render_about(fb, fb_w, fb_h_px, state, area),
+    }
+}
+
+fn panel_heading(fb: &mut Framebuffer, fb_w: u32, fb_h_px: u32, area: &Rect, title: &str) {
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        area.y + 16,
+        title,
+        ACCENT,
+        2,
+    );
+    draw_flag_bar(
+        fb,
+        fb_w,
+        area.x + 18,
+        area.y + 38,
+        area.w.saturating_sub(36).min(180),
+        3,
+        &theme::TRANS_FLAG,
+        true,
+    );
+}
+
+fn render_home(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    fb_h_px: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+) {
+    panel_heading(fb, fb_w, fb_h_px, area, "xHOLY");
+    let mut y = area.y + 56;
+    let status = if state.running {
+        "EMULATOR: RUNNING"
+    } else if state.paused {
+        "EMULATOR: PAUSED"
+    } else {
+        "EMULATOR: IDLE"
+    };
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        y,
+        status,
+        theme::TRANS_PINK,
+        1,
+    );
+    y += 20;
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        y,
+        &format!("{} GAMES IN LIBRARY", state.games.len()),
+        theme::TRANS_WHITE,
+        1,
+    );
+    y += 28;
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        y,
+        "RECENT GAMES",
+        DIM_ACCENT,
+        1,
+    );
+    y += 18;
+    for (i, game) in state.games.iter().take(3).enumerate() {
+        if y + 12 > area.y + area.h {
+            break;
+        }
+        draw_text(
+            fb,
+            fb_w,
+            fb_h_px,
+            area.x + 18,
+            y,
+            &truncate(&game.title.to_uppercase(), 32),
+            if i == 0 { ACCENT } else { TEXT },
+            1,
+        );
+        y += 16;
+    }
+    y += 12;
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        y,
+        "PRESS LIBRARY TO BROWSE",
+        GRAY,
+        1,
+    );
+    y += 16;
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        y,
+        "O: SETTINGS  |  L: LOGS",
+        GRAY,
+        1,
+    );
+    let _ = fb_h_px;
+}
+
+fn render_settings_view(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    fb_h_px: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+) {
+    panel_heading(fb, fb_w, fb_h_px, area, "SETTINGS");
+    let groups = [
+        "GENERAL",
+        "GRAPHICS",
+        "AUDIO",
+        "INPUT",
+        "CPU / EMULATION",
+        "DISCORD",
+        "LOGS & DEBUG",
+    ];
+    let mut y = area.y + 56;
+    for (i, group) in groups.iter().enumerate() {
+        if y + 14 > area.y + area.h {
+            break;
+        }
+        let color = if i % 2 == 0 {
+            ACCENT
+        } else {
+            theme::TRANS_PINK
+        };
+        draw_text(fb, fb_w, fb_h_px, area.x + 18, y, group, color, 1);
+        fill_rect(
+            fb,
+            fb_w,
+            area.x + 18,
+            y + 13,
+            area.w.saturating_sub(36).min(220),
+            1,
+            DIM_ACCENT,
+        );
+        y += 22;
+    }
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        y + 4,
+        &format!(
+            "THEME: {:?}  GPU: {}",
+            state.theme,
+            truncate(&state.gpu_label, 20)
+        ),
+        GRAY,
+        1,
+    );
+}
+
+fn render_logs(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    fb_h_px: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+) {
+    panel_heading(fb, fb_w, fb_h_px, area, "DIAGNOSTICS");
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        area.y + 48,
+        "FILTER: ALL / INFO / WARNING / ERROR",
+        GRAY,
+        1,
+    );
+    let mut y = area.y + 66;
+    for line in state.console_log.iter().rev().take(8) {
+        if y + 12 > area.y + area.h {
+            break;
+        }
+        // Structured view: level tag + module + message where available.
+        let (tag, color) = if line.contains("error") {
+            ("ERR", theme::TRANS_PINK)
+        } else if line.contains("warn") {
+            ("WRN", theme::TRANS_PINK)
+        } else {
+            ("INF", ACCENT)
+        };
+        draw_text(fb, fb_w, fb_h_px, area.x + 18, y, tag, color, 1);
+        draw_text(
+            fb,
+            fb_w,
+            fb_h_px,
+            area.x + 60,
+            y,
+            &truncate(line, 36),
+            TEXT,
+            1,
+        );
+        y += 14;
+    }
+    if state.console_log.is_empty() {
+        draw_text(
+            fb,
+            fb_w,
+            fb_h_px,
+            area.x + 18,
+            y,
+            "NO LOG ENTRIES YET",
+            GRAY,
+            1,
+        );
+    }
+}
+
+fn render_about(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    fb_h_px: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+) {
+    panel_heading(fb, fb_w, fb_h_px, area, "ABOUT xHOLY");
+    let mut y = area.y + 56;
+    for line in [
+        "xHoly - research HLE emulator",
+        "Xbox One / Xbox Series X|S",
+        "Windows x86-64 / Linux x86-64",
+        "Pride UI: trans-blue / trans-pink / white",
+        "Discord Rich Presence: enabled via config",
+        "ScarlettX: compatibility reference",
+    ] {
+        draw_text(fb, fb_w, fb_h_px, area.x + 18, y, line, TEXT, 1);
+        y += 18;
+    }
+    draw_text(
+        fb,
+        fb_w,
+        fb_h_px,
+        area.x + 18,
+        y + 6,
+        &format!("GPU: {}", truncate(&state.gpu_label, 32)),
+        GRAY,
+        1,
+    );
 }
 
 /// Centered settings panel: resolution, FPS limit, vsync, fullscreen,
@@ -337,14 +693,18 @@ fn render_toolbar(
             "CHEATS" => state.cheat_engine_enabled,
             _ => false,
         };
+        // Each flag is recognisable on the button *surface*, not only in
+        // a decorative line: hover/active strengthen the tint.
         let surface = if hovered {
-            theme::shade(PANEL_ALT, 1.35)
+            theme::mix(PANEL_ALT, primary, 0.55)
         } else if active {
-            theme::mix(PANEL_ALT, primary, 0.28)
+            theme::mix(PANEL_ALT, primary, 0.45)
         } else {
-            PANEL_ALT
+            theme::mix(PANEL_ALT, primary, 0.30)
         };
         fill_rect_rounded(fb, fb_w, x, y, bw, bh, 5, surface);
+        // Wider flag band so the palette reads as part of the control.
+        draw_flag_bar(fb, fb_w, x + 1, y + bh - 7, bw - 2, 6, flag, true);
         // Thin top highlight instead of a heavy full border.
         fill_rect(
             fb,
@@ -626,6 +986,118 @@ fn render_info_panel(
     }
 }
 
+/// Cover grid for the Game Library view.
+fn render_cover_grid(
+    fb: &mut Framebuffer,
+    fb_w: u32,
+    fb_h_px: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+    layout: &mut UiLayout,
+) {
+    use crate::gui::thumbnails;
+    panel_heading(fb, fb_w, fb_h_px, area, "GAME LIBRARY");
+    let query = state.search.trim().to_ascii_lowercase();
+    let games: Vec<(usize, &crate::gui::GameListItem)> = state
+        .games
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| query.is_empty() || g.title.to_ascii_lowercase().contains(&query))
+        .collect();
+    if games.is_empty() {
+        draw_text(
+            fb,
+            fb_w,
+            fb_h_px,
+            area.x + 18,
+            area.y + 64,
+            "NO GAMES MATCH",
+            GRAY,
+            1,
+        );
+        return;
+    }
+    let cols = ((area.w.saturating_sub(24)) / 156).clamp(1, 6);
+    let cell_w = (area.w.saturating_sub(24) / cols).min(180);
+    let img_h = (cell_w * 3 / 4).max(40);
+    let cell_h = img_h + 26;
+    let loader = thumbnails::loader();
+    for (slot, (index, game)) in games.iter().enumerate() {
+        let col = slot as u32 % cols;
+        let row = slot as u32 / cols;
+        let x = area.x + 12 + col * cell_w;
+        let y = area.y + 52 + row * cell_h;
+        if y + cell_h > area.y + area.h {
+            break;
+        }
+        let r = Rect {
+            x,
+            y,
+            w: cell_w.saturating_sub(6),
+            h: cell_h.saturating_sub(4),
+        };
+        let selected = *index == state.selected_game;
+        fill_rect_rounded(
+            fb,
+            fb_w,
+            r.x,
+            r.y,
+            r.w,
+            r.h,
+            5,
+            if selected {
+                theme::mix(PANEL_ALT, theme::TRANS_BLUE, 0.28)
+            } else {
+                PANEL_ALT
+            },
+        );
+        // Cover image, async-loaded and cached; placeholder on miss.
+        let cover = game.cover_art.as_ref().and_then(|path| {
+            let cache = loader.cache();
+            if cache.get(path).is_none() {
+                loader.queue(path.clone());
+            }
+            cache.get(path).flatten()
+        });
+        let image = cover
+            .map(|img| thumbnails::cover_fit(&img, r.w, img_h))
+            .unwrap_or_else(|| thumbnails::placeholder(r.w, img_h));
+        blit_rgba(
+            fb,
+            fb_w,
+            fb_h_px,
+            &image.pixels,
+            image.width as usize,
+            image.height as usize,
+            r.x,
+            r.y,
+        );
+        if selected {
+            draw_flag_bar(
+                fb,
+                fb_w,
+                r.x,
+                r.y + img_h - 3,
+                r.w,
+                3,
+                &theme::TRANS_FLAG,
+                true,
+            );
+        }
+        draw_text(
+            fb,
+            fb_w,
+            fb_h_px,
+            r.x + 4,
+            r.y + img_h + 4,
+            &truncate(&game.title.to_uppercase(), (r.w / 8) as usize),
+            if selected { theme::TRANS_WHITE } else { TEXT },
+            1,
+        );
+        layout.covers.push((r, *index));
+    }
+}
+
 fn render_preview_area(
     fb: &mut Framebuffer,
     fb_w: u32,
@@ -876,10 +1348,10 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 5x7 bitmap font
+// Text drawing - embedded Inter font (no pixel/terminal font in the GUI)
 // ---------------------------------------------------------------------------
 
-/// Draw text at (x, y) top-left, `scale` = integer pixel scale.
+/// Draw text at `(x, y)` top-left, `scale` = integer size step.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_text(
     fb: &mut Framebuffer,
@@ -891,95 +1363,12 @@ pub fn draw_text(
     color: [u8; 4],
     scale: u32,
 ) {
-    let mut cx = x;
-    for ch in text.chars() {
-        let glyph = glyph(ch);
-        for (col, &bits) in glyph.iter().enumerate() {
-            for row in 0..7u32 {
-                if bits & (1 << row) != 0 {
-                    for sy in 0..scale {
-                        for sx in 0..scale {
-                            let px = cx + col as u32 * scale + sx;
-                            let py = y + row * scale + sy;
-                            if px < fb_w && py < fb_h {
-                                let i = (py as usize * fb_w as usize + px as usize) * 4;
-                                fb[i..i + 4].copy_from_slice(&color);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        cx += 6 * scale;
-    }
+    crate::gui::text::draw_text(fb, fb_w, fb_h, x, y, text, color, scale);
 }
 
 /// Width of `text` in pixels at the given scale.
 pub fn text_width(text: &str, scale: u32) -> u32 {
-    text.chars().count() as u32 * 6 * scale
-}
-
-/// 5x7 glyph column bitmasks (bit `row` = pixel row 0..6). Unknown → blank.
-fn glyph(ch: char) -> [u8; 5] {
-    match ch {
-        ' ' => [0; 5],
-        '0' => [0x3E, 0x51, 0x49, 0x45, 0x3E],
-        '1' => [0x00, 0x42, 0x7F, 0x40, 0x00],
-        '2' => [0x42, 0x61, 0x51, 0x49, 0x46],
-        '3' => [0x21, 0x41, 0x45, 0x4B, 0x31],
-        '4' => [0x18, 0x14, 0x12, 0x7F, 0x10],
-        '5' => [0x27, 0x45, 0x45, 0x45, 0x39],
-        '6' => [0x3C, 0x4A, 0x49, 0x49, 0x30],
-        '7' => [0x01, 0x71, 0x09, 0x05, 0x03],
-        '8' => [0x36, 0x49, 0x49, 0x49, 0x36],
-        '9' => [0x06, 0x49, 0x49, 0x29, 0x1E],
-        'A' => [0x7E, 0x11, 0x11, 0x11, 0x7E],
-        'B' => [0x7F, 0x49, 0x49, 0x49, 0x36],
-        'C' => [0x3E, 0x41, 0x41, 0x41, 0x22],
-        'D' => [0x7F, 0x41, 0x41, 0x22, 0x1C],
-        'E' => [0x7F, 0x49, 0x49, 0x49, 0x41],
-        'F' => [0x7F, 0x09, 0x09, 0x09, 0x01],
-        'G' => [0x3E, 0x41, 0x49, 0x49, 0x7A],
-        'H' => [0x7F, 0x08, 0x08, 0x08, 0x7F],
-        'I' => [0x00, 0x41, 0x7F, 0x41, 0x00],
-        'J' => [0x20, 0x40, 0x41, 0x3F, 0x01],
-        'K' => [0x7F, 0x08, 0x14, 0x22, 0x41],
-        'L' => [0x7F, 0x40, 0x40, 0x40, 0x40],
-        'M' => [0x7F, 0x02, 0x0C, 0x02, 0x7F],
-        'N' => [0x7F, 0x04, 0x08, 0x10, 0x7F],
-        'O' => [0x3E, 0x41, 0x41, 0x41, 0x3E],
-        'P' => [0x7F, 0x09, 0x09, 0x09, 0x06],
-        'Q' => [0x3E, 0x41, 0x51, 0x21, 0x5E],
-        'R' => [0x7F, 0x09, 0x19, 0x29, 0x46],
-        'S' => [0x46, 0x49, 0x49, 0x49, 0x31],
-        'T' => [0x01, 0x01, 0x7F, 0x01, 0x01],
-        'U' => [0x3F, 0x40, 0x40, 0x40, 0x3F],
-        'V' => [0x1F, 0x20, 0x40, 0x20, 0x1F],
-        'W' => [0x3F, 0x40, 0x38, 0x40, 0x3F],
-        'X' => [0x63, 0x14, 0x08, 0x14, 0x63],
-        'Y' => [0x07, 0x08, 0x70, 0x08, 0x07],
-        'Z' => [0x61, 0x51, 0x49, 0x45, 0x43],
-        ':' => [0x00, 0x36, 0x36, 0x00, 0x00],
-        '.' => [0x00, 0x60, 0x60, 0x00, 0x00],
-        ',' => [0x00, 0x50, 0x30, 0x00, 0x00],
-        '-' => [0x08, 0x08, 0x08, 0x08, 0x08],
-        '_' => [0x40, 0x40, 0x40, 0x40, 0x40],
-        '/' => [0x20, 0x10, 0x08, 0x04, 0x02],
-        '%' => [0x23, 0x13, 0x08, 0x64, 0x62],
-        '(' => [0x00, 0x1C, 0x22, 0x41, 0x00],
-        ')' => [0x00, 0x41, 0x22, 0x1C, 0x00],
-        '[' => [0x00, 0x7F, 0x41, 0x41, 0x00],
-        ']' => [0x00, 0x41, 0x41, 0x7F, 0x00],
-        '<' => [0x08, 0x14, 0x22, 0x41, 0x00],
-        '>' => [0x00, 0x41, 0x22, 0x14, 0x08],
-        '=' => [0x14, 0x14, 0x14, 0x14, 0x14],
-        '+' => [0x08, 0x08, 0x3E, 0x08, 0x08],
-        '*' => [0x14, 0x08, 0x3E, 0x08, 0x14],
-        '!' => [0x00, 0x00, 0x5F, 0x00, 0x00],
-        '?' => [0x02, 0x01, 0x51, 0x09, 0x06],
-        c if c.is_ascii_lowercase() => glyph(c.to_ascii_uppercase()),
-        _ => [0; 5],
-    }
+    crate::gui::text::text_width(text, scale)
 }
 
 // Keep GameListItem referenced for doc links.

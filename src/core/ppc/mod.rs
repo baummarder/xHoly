@@ -1,3 +1,4 @@
+//! LEGACY: Xbox 360 PowerPC subset. Outside the target scope (ADR 0001). Compiled only with feature legacy-xbox360.
 //! PowerPC (Xbox 360) decoder + interpreter — Phase 24 foundation.
 //!
 //! Real **big-endian** PowerPC encodings for an integer/branch subset:

@@ -296,6 +296,45 @@ Withdrawn: the progress percentage (62 %) were not derived from tests and are no
   and copies rows instead of checking every pixel, uses rounded controls
   and panels, and keeps the pride palette.
 
+- [x] **Phase 25 (in progress, uncommitted) — Pride UI navigation + first
+  boot foundations**: the windowed compositor now has six top-level views
+  (Home, Library, Emulation, Settings, Logs, About) with clickable
+  navigation, trans-blue/pink/white accents preserved, consistent panels,
+  shadowed headings and view-specific content. A real PE32+ parser
+  (`core::loader::pe64`) handles sections, DIR64/HIGHLOW relocations,
+  named/ordinal imports and IAT binding; `core::native` allocates RWX
+  memory on Windows/Linux; `core::boot::boot_synthetic()` actually maps
+  a synthetic PE, reaches its entry point and dispatches an HLE callback.
+  `BootStatus` reports only verified states — parsing is never "Playable".
+  **Honest limits:** no retail game boot, no HLE API table yet, no
+  graphics/audio from the guest, no ScarlettX package loader.
+
+### `game_scarlett_master.exe` — format analysis (read-only)
+
+Local dump: `C:\Users\admin\Downloads\game_scarlett_master.exe`
+(120,181,760 bytes). **Not modified.** Findings from raw header/import
+inspection: standard **PE32+ / AMD64** image (`MZ`, `PE\0\0`, machine
+`0x8664`, optional magic `0x20B`), image base `0x140000000`, entry RVA
+`0x56A1EC8`, subsystem 2, 10 sections (`.text`, `.rdata`, `.data`,
+`.pdata`, `.tls`, `.reloc`, two `.xbld`, ...). Imports include
+`d3d12_xs.dll`, `xmem.dll`, `MSVCP140.dll` and many `api-ms-win-core-*`
+API sets. `.xbld` strings identify **GRDK/GXDK (April 2025/2026)** builds.
+Despite the `.exe` suffix this is an **Xbox GDK (Series X|S) executable**,
+not an ordinary Windows application. Status: **Format Recognized** — no
+boot attempt has been made and no compatibility is claimed.
+
+### ScarlettX reference (read-only)
+
+Local copy: `C:\Users\admin\Downloads\ScarlettX-main\ScarlettX-main`.
+**No LICENSE file found** — no source code was copied. Its README
+documents PE32+ in-process mapping with DIR64/HIGHLOW relocations,
+`MicrosoftGame.Config` (`XboxGen9`/`Scarlett`), named/ordinal IAT and
+API-set redirection, HLE DLLs (`xgameruntime`, `d3d12_xs`, `xg_xs`,
+`GameInput`, `XGameSave`, XCurl), and synthetic games (`hello_scarlett`,
+`rt_showcase`, `scarlett_arena`). Retail XVC/XVD crypto is listed as 0%.
+Named retail compatibility references: Concept Destruction and
+Unicorn Overlord (with per-title caveats).
+
 ## Does NOT work yet
 
 - [ ] **No retail game runs** — the ARM64 interpreter covers a useful

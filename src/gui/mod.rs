@@ -29,7 +29,9 @@ pub mod shader_cache;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod software_renderer;
 pub mod terminal;
+pub mod text;
 pub mod textures;
+pub mod thumbnails;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wgpu_backend;
 pub mod widgets;

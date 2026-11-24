@@ -1,3 +1,4 @@
+//! LEGACY: Xbox 360 XAM ordinals taken from Xenia. Not valid for Series X|S. Compiled only with feature legacy-xbox360.
 //! XAM export table with **real Xbox 360 ordinals** (Phase 24).
 //!
 //! Retail titles do not call raw SVCs for XAM services — they import

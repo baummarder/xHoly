@@ -16,6 +16,77 @@ pub struct SaveState {
     pub description: String,
 }
 
+/// Top-level navigation view of the redesigned xHoly UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GuiView {
+    /// Branding, recent games and quick access.
+    #[default]
+    Home,
+    /// Searchable game library.
+    Library,
+    /// Live emulation status and logs.
+    Emulation,
+    /// Grouped settings.
+    Settings,
+    /// Structured diagnostics.
+    Logs,
+    /// Version and credits.
+    About,
+}
+
+impl GuiView {
+    /// All views in navigation order.
+    pub const ALL: [Self; 6] = [
+        Self::Home,
+        Self::Library,
+        Self::Emulation,
+        Self::Settings,
+        Self::Logs,
+        Self::About,
+    ];
+
+    /// Navigation label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Home => "HOME",
+            Self::Library => "LIBRARY",
+            Self::Emulation => "EMULATION",
+            Self::Settings => "SETTINGS",
+            Self::Logs => "LOGS",
+            Self::About => "ABOUT",
+        }
+    }
+}
+
+/// Log level filter for the diagnostics view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogFilter {
+    /// Everything.
+    #[default]
+    All,
+    /// Errors only.
+    Error,
+    /// Warnings and errors.
+    Warning,
+    /// Info and above.
+    Info,
+    /// Debug and above (everything).
+    Debug,
+}
+
+impl LogFilter {
+    /// Parse a CLI/config-style name.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "all" | "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warning" | "warn" => Some(Self::Warning),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+
 /// Mutable state for the windowed GUI.
 #[derive(Debug)]
 pub struct WindowedGuiState {
@@ -71,6 +142,12 @@ pub struct WindowedGuiState {
     pub console_log: Vec<String>,
     /// Retail-boot progress shown by the ScarletX shell (Phase 24).
     pub boot_progress: Option<BootProgress>,
+    /// Active top-level navigation view.
+    pub view: GuiView,
+    /// Library search text (display only; filtering happens in the UI).
+    pub search: String,
+    /// Diagnostics level filter.
+    pub log_filter: LogFilter,
 }
 
 impl Default for WindowedGuiState {
@@ -101,6 +178,9 @@ impl Default for WindowedGuiState {
             guest_frame: None,
             console_log: Vec::new(),
             boot_progress: None,
+            view: GuiView::Home,
+            search: String::new(),
+            log_filter: LogFilter::All,
         }
     }
 }

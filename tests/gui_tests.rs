@@ -1,7 +1,7 @@
 //! Integration tests for the xHoly GUI subsystem.
 
 use xholy::gui::windowed::input::{GuiAction, InputState};
-use xholy::gui::windowed::state::WindowedGuiState;
+use xholy::gui::windowed::state::{GuiView, WindowedGuiState};
 use xholy::gui::windowed::ui;
 use xholy::gui::{GameListItem, GpuApiPreference, GuiBackend, GuiConfig, GuiTheme};
 use xholy::theme;
@@ -94,6 +94,38 @@ fn software_warning_banner_shows() {
     let i = (40 * 800 + 400) * 4;
     let expected = theme::mix(theme::PANEL, theme::BISEXUAL[0], 0.35);
     assert_eq!(&fb[i..i + 3], &expected[..3]);
+}
+
+#[test]
+fn redesigned_navigation_has_six_views() {
+    let (fb, layout) = ui::composite(&WindowedGuiState::default(), 1280, 720);
+    assert_eq!(fb.len(), 1280 * 720 * 4);
+    assert_eq!(layout.nav.len(), 6);
+    let labels: Vec<_> = layout.nav.iter().map(|(_, l)| *l).collect();
+    assert_eq!(
+        labels,
+        vec!["HOME", "LIBRARY", "EMULATION", "SETTINGS", "LOGS", "ABOUT"]
+    );
+    for (rect, _) in &layout.nav {
+        assert!(rect.w > 0 && rect.h > 0);
+        assert!(rect.y >= 34 && rect.y < 60, "nav sits below the toolbar");
+    }
+}
+
+#[test]
+fn every_view_renders_with_trans_accents() {
+    for view in GuiView::ALL {
+        let state = WindowedGuiState {
+            view,
+            ..Default::default()
+        };
+        let (fb, _) = ui::composite(&state, 800, 600);
+        assert_eq!(fb.len(), 800 * 600 * 4);
+        assert!(
+            fb.as_chunks::<4>().0.contains(&theme::TRANS_BLUE),
+            "view {view:?} must use the trans-blue accent"
+        );
+    }
 }
 
 #[test]

@@ -23,7 +23,7 @@ use crate::gui::renderer::GuiFrameRenderer;
 use crate::gui::{FramePacer, GameListItem, GuiConfig};
 use crate::presence::{ConsoleGeneration, NoopPresence, PresenceSink, PresenceState};
 use input::{GuiAction, InputState};
-use state::WindowedGuiState;
+use state::{GuiView, WindowedGuiState};
 use std::sync::Arc;
 use std::time::Instant;
 use winit::application::ApplicationHandler;
@@ -467,6 +467,23 @@ impl WindowApp {
         let (mx, my) = self.input.mouse;
         let (mx, my) = (mx as u32, my as u32);
 
+        // Top navigation (Home / Library / Emulation / Settings / Logs / About)
+        for (rect, label) in &layout.nav {
+            if rect.contains(mx, my) {
+                self.state.view = match *label {
+                    "HOME" => GuiView::Home,
+                    "LIBRARY" => GuiView::Library,
+                    "EMULATION" => GuiView::Emulation,
+                    "SETTINGS" => GuiView::Settings,
+                    "LOGS" => GuiView::Logs,
+                    "ABOUT" => GuiView::About,
+                    _ => self.state.view,
+                };
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+
         // Toolbar buttons
         for (rect, label) in &layout.buttons {
             if rect.contains(mx, my) {
@@ -483,6 +500,15 @@ impl WindowApp {
                 return;
             }
         }
+        // Cover grid (Game Library)
+        for (rect, idx) in &layout.covers {
+            if rect.contains(mx, my) {
+                self.state.selected_game = *idx;
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+
         // Sidebar rows
         for (rect, idx) in &layout.rows {
             if rect.contains(mx, my) {
@@ -648,6 +674,21 @@ fn scan_games_windowed() -> Vec<GameListItem> {
                 } else {
                     path.clone()
                 };
+                // Automatic cover discovery in the dump's own directory.
+                let game_dir = if item.path.is_file() {
+                    item.path.parent().unwrap_or(&item.path)
+                } else {
+                    &item.path
+                };
+                let stem = item
+                    .path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| item.title.clone());
+                if let Some(cover) = crate::gui::thumbnails::discover(game_dir, &stem) {
+                    item.cover_art = Some(cover.clone());
+                    crate::gui::thumbnails::loader().queue(cover);
+                }
                 items.push(item);
             }
         }

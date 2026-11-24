@@ -1,3 +1,4 @@
+//! LEGACY: XEX2 image decoding for the Xbox 360 format (see xex_parser). Outside the target scope, ADR 0001.
 //! XEX2 image decode — Phase 20.
 //!
 //! Turns the on-disk payload of a real XEX2 into a flat guest image:

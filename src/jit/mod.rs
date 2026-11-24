@@ -1,3 +1,4 @@
+//! STATUS: research subset (x86-64 to WASM, interpreted). Not yet the Xbox path, see ADR 0001 phase 24E.
 //! xHoly JIT subsystem — Phase 13.
 //!
 //! x86-64 → WASM JIT pipeline: decode → schedule → allocate → emit

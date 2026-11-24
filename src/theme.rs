@@ -66,6 +66,14 @@ pub const GENDERQUEER: [Rgba; 3] = [
     TRANS_WHITE,
     [0x4A, 0x81, 0x23, 0xFF],
 ];
+/// Genderfluid flag palette.
+pub const GENDERFLUID: [Rgba; 5] = [
+    [0xFF, 0x75, 0xAE, 0xFF], // pink
+    TRANS_WHITE,
+    [0xC0, 0x9D, 0xE6, 0xFF], // lavender
+    [0x3E, 0x3E, 0x3E, 0xFF], // black
+    TRANS_BLUE,
+];
 /// Lesbian flag palette (used for the console accent).
 pub const LESBIAN: [Rgba; 5] = [
     [0xFA, 0x5C, 0x2B, 0xFF],
@@ -95,13 +103,13 @@ pub const DIM: Rgba = [0x70, 0x82, 0xA3, 0xFF];
 /// Toolbar button → flag palette. The trans flag is the primary action;
 /// every other button carries a different LGBTQ+ flag.
 pub const BUTTON_FLAGS: [(&str, &[Rgba]); 7] = [
-    ("LAUNCH", &TRANS_FLAG),
-    ("PLAY", &RAINBOW),
-    ("PAUSE", &BISEXUAL),
-    ("EJECT", &NONBINARY),
-    ("SAVE", &ASEXUAL),
-    ("LOAD", &PANSEXUAL),
-    ("CHEATS", &GENDERQUEER),
+    ("LAUNCH", &TRANS_FLAG), // primary brand action
+    ("PLAY", &RAINBOW),      // rainbow pride
+    ("PAUSE", &PANSEXUAL),   // pansexual pride
+    ("EJECT", &LESBIAN),     // lesbian pride
+    ("SAVE", &ASEXUAL),      // asexual pride
+    ("LOAD", &GENDERFLUID),  // genderfluid pride
+    ("CHEATS", &BISEXUAL),   // bisexual pride
 ];
 
 /// Pick the palette registered for a toolbar label (falls back to trans).

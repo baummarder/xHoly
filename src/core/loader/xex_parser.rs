@@ -1,3 +1,4 @@
+//! LEGACY: XEX2 is the Xbox 360 (PowerPC) executable format. Kept only for the --game fixtures and until the PE32+ loader (phase 24D) replaces it.
 //! XEX / XEX2 header parser — Phase 10 + Phase 19.
 //!
 //! Two on-disk layouts are understood:

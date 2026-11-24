@@ -1,3 +1,4 @@
+//! STATUS: AArch64 test harness, not an Xbox target (ADR 0001). Used by --game demos and kernel tests.
 //! Real AArch64 (ARMv8-A) interpreter — Phase 8.
 //!
 //! Unlike [`super::arm64`] (a custom xHoly ISA used for the Phase-1
