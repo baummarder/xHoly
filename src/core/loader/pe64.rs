@@ -497,9 +497,12 @@ pub fn synthetic_pe() -> Vec<u8> {
     // IAT slot at RVA 0x1600 -> file 0xA00, by name RVA 0x1510
     d[0xA00..0xA08].copy_from_slice(&0x1510u64.to_le_bytes());
     d[0xA08..0xA10].copy_from_slice(&0u64.to_le_bytes());
-    // DLL and symbol names
+    // DLL name and hint/name entry at RVA 0x1510 (file 0x910): the
+    // 2-byte hint is skipped by `Pe64::import_name`, exactly like a real
+    // hint/name table entry.
     d[0x900..0x910].copy_from_slice(b"d3d12_xs.dll\0\0\0\0");
-    d[0x910..0x924].copy_from_slice(b"D3D12CreateDevice\0\0\0");
+    d[0x910..0x912].copy_from_slice(&0u16.to_le_bytes());
+    d[0x912..0x924].copy_from_slice(b"D3D12CreateDevice\0");
     // relocation block at file 0xB00: page 0x1000, size 12, DIR64 at 0x1004
     d[0xB00..0xB04].copy_from_slice(&0x1000u32.to_le_bytes());
     d[0xB04..0xB08].copy_from_slice(&12u32.to_le_bytes());

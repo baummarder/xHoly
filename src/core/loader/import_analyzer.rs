@@ -77,28 +77,30 @@ fn symbol_name(image: &Pe64Image, import: &Import) -> String {
 pub fn analyze_imports(image: &Pe64Image, registry: &HleRegistry) -> ImportAnalysis {
     let mut out = ImportAnalysis::default();
     for descriptor in &image.imports {
-        let module_state = registry.module_state(&descriptor.dll);
+        let module_meta = registry.module_meta(&descriptor.dll);
+        let module_state = module_meta
+            .map(|m| m.state)
+            .unwrap_or(ImplementationState::Unknown);
         for symbol in &descriptor.symbols {
             let name = symbol_name(image, symbol);
-            // Function state wins; module state is the fallback for
-            // imports whose individual symbol is not in the registry.
-            let state = match registry.function_state(&descriptor.dll, &name) {
-                ImplementationState::Unknown => module_state,
-                other => other,
+            // An explicit function entry always wins — including an
+            // explicit `Unknown` research verdict. Only symbols with no
+            // entry at all fall back to the module state, and only an
+            // explicitly unsupported module may classify them as
+            // unsupported: a partially implemented module must never
+            // credit functions it does not provide.
+            let function_meta = registry.function_meta(&descriptor.dll, &name);
+            let state = match function_meta {
+                Some(meta) => meta.state,
+                None if module_state == ImplementationState::Unsupported => {
+                    ImplementationState::Unsupported
+                }
+                None => ImplementationState::Unknown,
             };
-            let evidence = registry
-                .functions
-                .iter()
-                .find(|f| f.module.eq_ignore_ascii_case(&descriptor.dll) && f.name == name)
+            let evidence = function_meta
                 .map(|f| f.evidence.clone())
-                .unwrap_or_else(|| {
-                    registry
-                        .modules
-                        .iter()
-                        .find(|m| m.name.eq_ignore_ascii_case(&descriptor.dll))
-                        .map(|m| m.evidence.clone())
-                        .unwrap_or_default()
-                });
+                .or_else(|| module_meta.map(|m| m.evidence.clone()))
+                .unwrap_or_default();
             let entry = AnalyzedImport {
                 module: descriptor.dll.clone(),
                 symbol: name,
@@ -317,6 +319,72 @@ mod tests {
         let report = build_report("plain.exe", &image, &HleRegistry::default());
         assert_eq!(report.console_generation, None);
         assert!(report.generation_evidence.is_empty());
+    }
+
+    #[test]
+    fn xmem_partial_status_flows_into_the_report() {
+        // Rewrite the fixture's imported symbol to XMemAlloc (fits the
+        // existing hint/name slot) and import it from xmem.dll.
+        let mut bytes = pe64::synthetic_pe();
+        bytes[0x912..0x91C].copy_from_slice(b"XMemAlloc\0");
+        let mut image = pe64::parse(&bytes).unwrap();
+        image.imports[0].dll = "xmem.dll".into();
+        let analysis = analyze_imports(&image, &HleRegistry::with_known_entries());
+        assert_eq!(analysis.partial.len(), 1, "XMemAlloc must be partial");
+        assert_eq!(analysis.partial[0].module, "xmem.dll");
+        assert_eq!(analysis.partial[0].symbol, "XMemAlloc");
+        assert!(
+            analysis.partial[0]
+                .evidence
+                .contains("src/core/hle/xmem.rs"),
+            "evidence must point at the implementation: {}",
+            analysis.partial[0].evidence
+        );
+        assert_eq!(
+            analysis.implemented.len(),
+            0,
+            "nothing is fully implemented"
+        );
+    }
+
+    #[test]
+    fn partial_module_does_not_credit_unregistered_symbols() {
+        let mut image = pe64::parse(&pe64::synthetic_pe()).unwrap();
+        // xmem.dll is partially implemented, but this symbol is not an
+        // xmem entry: it must stay Unknown, not inherit module credit.
+        image.imports[0].dll = "xmem.dll".into();
+        let analysis = analyze_imports(&image, &HleRegistry::with_known_entries());
+        assert_eq!(analysis.partial.len(), 0, "no inherited credit");
+        assert_eq!(analysis.unknown.len(), 1);
+        assert_eq!(analysis.unknown[0].symbol, "D3D12CreateDevice");
+    }
+
+    #[test]
+    fn unsupported_module_still_classifies_unregistered_symbols() {
+        let mut bytes = pe64::synthetic_pe();
+        bytes[0x912..0x91A].copy_from_slice(b"XboxFoo\0");
+        let image = pe64::parse(&bytes).unwrap();
+        let analysis = analyze_imports(&image, &HleRegistry::with_known_entries());
+        assert_eq!(analysis.unsupported.len(), 1);
+        assert_eq!(analysis.unknown.len(), 0);
+        assert_eq!(analysis.unsupported[0].module, "d3d12_xs.dll");
+    }
+
+    #[test]
+    fn explicit_unknown_research_verdict_survives_an_unsupported_module() {
+        // Place a longer hint/name entry at RVA 0x1530 and point the IAT
+        // slot at it, so the fixture imports a symbol whose registry entry
+        // is explicitly Unknown inside an unsupported module.
+        let mut bytes = pe64::synthetic_pe();
+        bytes[0x930..0x932].copy_from_slice(&0u16.to_le_bytes());
+        bytes[0x932..0x948].copy_from_slice(b"D3D12XboxCreateDevice\0");
+        bytes[0xA00..0xA08].copy_from_slice(&0x1530u64.to_le_bytes());
+        let image = pe64::parse(&bytes).unwrap();
+        let analysis = analyze_imports(&image, &HleRegistry::with_known_entries());
+        assert_eq!(analysis.unknown.len(), 1, "research verdict must win");
+        assert_eq!(analysis.unsupported.len(), 0);
+        assert_eq!(analysis.unknown[0].symbol, "D3D12XboxCreateDevice");
+        assert!(!analysis.unknown[0].evidence.is_empty());
     }
 }
 

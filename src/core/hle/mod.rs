@@ -8,6 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod graphics;
+pub mod runtime;
+pub mod xmem;
+
 /// Implementation state of a module or function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,13 +93,19 @@ impl HleRegistry {
                 name: "d3d12_xs.dll".into(),
                 role: "Xbox D3D12 graphics runtime".into(),
                 state: ImplementationState::Unsupported,
-                evidence: "ScarlettX README (HLE target); no guest draw translation".into(),
+                evidence: "role documented in the public GDK graphics docs; xHoly has no guest device shim or draw translation".into(),
             },
             ModuleMeta {
                 name: "xmem.dll".into(),
                 role: "Xbox memory services".into(),
+                state: ImplementationState::PartiallyImplemented,
+                evidence: "public GDK docs show XMemAlloc/XMemFree call shape; implemented in src/core/hle/xmem.rs (attributes not decoded)".into(),
+            },
+            ModuleMeta {
+                name: "xg_xs.dll".into(),
+                role: "Xbox texture layout and swizzle library (Series X|S)".into(),
                 state: ImplementationState::Unsupported,
-                evidence: "ScarlettX README (HLE target); no xHoly implementation".into(),
+                evidence: "role documented in microsoft/DirectXTex and Xbox-ATG-Samples (MIT), which reference XG_XS.DLL; xHoly implements none of it".into(),
             },
             ModuleMeta {
                 name: "gameinput.dll".into(),
@@ -110,6 +120,13 @@ impl HleRegistry {
                 evidence: "not an Xbox API; xHoly does not emulate a host CRT".into(),
             },
         ];
+        // Per-symbol research (Phase 28). Every entry states whether a
+        // reliable public source exists; symbols without one stay
+        // `Unknown`. Sources: public GDK conceptual pages on
+        // docs.xbox.com (/build/...), microsoft/DirectXTex and
+        // microsoft/Xbox-ATG-Samples (MIT). The GDK reference pages
+        // (/reference/...) are access-restricted and are not used as
+        // documentation.
         let functions = vec![
             FunctionMeta {
                 module: "xam.xex".into(),
@@ -123,11 +140,116 @@ impl HleRegistry {
                 state: ImplementationState::Unknown,
                 evidence: "Xbox 360 XAM ordinal 0x191 (Xenia table); no verified Series X|S signature (ADR 0001)".into(),
             },
+            // --- xmem.dll -------------------------------------------------
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemAlloc".into(),
+                state: ImplementationState::PartiallyImplemented,
+                evidence: "two-argument call shape (size, ULONGLONG attributes) shown in the public GDK XDSP overview on docs.xbox.com and in microsoft/DirectXTex (MIT); src/core/hle/xmem.rs allocates guest memory but does not decode attributes".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemFree".into(),
+                state: ImplementationState::PartiallyImplemented,
+                evidence: "called as XMemFree(pointer, attributes) in microsoft/DirectXTex (MIT); src/core/hle/xmem.rs frees guest allocations but does not decode attributes".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemAllocDefault".into(),
+                state: ImplementationState::Unknown,
+                evidence: "no public interface documentation found; GDK reference pages are access-restricted".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemFreeDefault".into(),
+                state: ImplementationState::Unknown,
+                evidence: "no public interface documentation found; GDK reference pages are access-restricted".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemVirtualAlloc".into(),
+                state: ImplementationState::Unknown,
+                evidence: "public GDK memory page describes the contract (VirtualAlloc-like plus an XMemFlags field) but publishes no parameter list or flag values".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemAllocatePhysicalPages".into(),
+                state: ImplementationState::Unknown,
+                evidence: "public GDK memory page describes 64 KiB physical-page semantics but publishes no signature".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemFreePhysicalPages".into(),
+                state: ImplementationState::Unknown,
+                evidence: "public GDK memory page describes the role but publishes no signature".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemMapPhysicalPages".into(),
+                state: ImplementationState::Unknown,
+                evidence: "public GDK memory page describes mapping semantics but publishes no signature".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemMapPhysicalPagesScatter".into(),
+                state: ImplementationState::Unknown,
+                evidence: "public GDK memory page lists the function but publishes no signature".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemTransferMemory".into(),
+                state: ImplementationState::Unknown,
+                evidence: "no public documentation found for the Gen9 interface".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemGetWorkingSetStatistics".into(),
+                state: ImplementationState::Unknown,
+                evidence: "public GDK memory page describes the role (in-use footprint query) but publishes no signature".into(),
+            },
+            FunctionMeta {
+                module: "xmem.dll".into(),
+                name: "XMemIsToolsMemAvailable".into(),
+                state: ImplementationState::Unknown,
+                evidence: "no public documentation found for the Gen9 interface".into(),
+            },
+            // --- xg_xs.dll ------------------------------------------------
+            FunctionMeta {
+                module: "xg_xs.dll".into(),
+                name: "XGCreateTextureComputer".into(),
+                state: ImplementationState::Unknown,
+                evidence: "no public documentation for this exact symbol (Microsoft samples use XGCreateTexture2DComputer); third-party reverse-engineering sources disagree on the interface".into(),
+            },
+            FunctionMeta {
+                module: "xg_xs.dll".into(),
+                name: "XGSuggestSwizzleMode".into(),
+                state: ImplementationState::Unknown,
+                evidence: "no public documentation for this exact symbol (Microsoft samples use XGComputeOptimalSwizzleMode); third-party reverse-engineering sources disagree on the interface".into(),
+            },
+            // --- d3d12_xs.dll ---------------------------------------------
             FunctionMeta {
                 module: "d3d12_xs.dll".into(),
                 name: "D3D12XboxCreateDevice".into(),
+                state: ImplementationState::Unknown,
+                evidence: "signature exists only in the access-restricted GDK header d3d12_xs.h; no public documentation found".into(),
+            },
+            FunctionMeta {
+                module: "d3d12_xs.dll".into(),
+                name: "D3D12ConfigureVirtualMemoryX".into(),
+                state: ImplementationState::Unknown,
+                evidence: "no public documentation found for the Gen9 interface".into(),
+            },
+            FunctionMeta {
+                module: "d3d12_xs.dll".into(),
+                name: "D3D12SerializeVersionedRootSignature".into(),
+                state: ImplementationState::Unknown,
+                evidence: "a same-named PC D3D12 API is publicly documented, but equivalence of the d3d12_xs.dll export is unverified".into(),
+            },
+            FunctionMeta {
+                module: "d3d12_xs.dll".into(),
+                name: "D3D12CreateDevice".into(),
                 state: ImplementationState::Unsupported,
-                evidence: "ScarlettX README; xHoly has no guest device shim".into(),
+                evidence: "public PC D3D12 API name; xHoly has no guest device shim (see src/core/hle/graphics.rs)".into(),
             },
             FunctionMeta {
                 module: "gameinput.dll".into(),
@@ -141,20 +263,38 @@ impl HleRegistry {
 
     /// State of a module by name (case-insensitive).
     pub fn module_state(&self, name: &str) -> ImplementationState {
-        self.modules
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(name))
+        self.module_meta(name)
             .map(|m| m.state)
             .unwrap_or(ImplementationState::Unknown)
     }
 
+    /// Full metadata for a module, if it is registered.
+    pub fn module_meta(&self, name: &str) -> Option<&ModuleMeta> {
+        self.modules
+            .iter()
+            .find(|m| m.name.eq_ignore_ascii_case(name))
+    }
+
     /// State of a function by module + name (case-insensitive).
     pub fn function_state(&self, module: &str, name: &str) -> ImplementationState {
+        self.function_meta(module, name)
+            .map(|f| f.state)
+            .unwrap_or(ImplementationState::Unknown)
+    }
+
+    /// Full metadata for a function, if it is registered.
+    pub fn function_meta(&self, module: &str, name: &str) -> Option<&FunctionMeta> {
         self.functions
             .iter()
             .find(|f| f.module.eq_ignore_ascii_case(module) && f.name.eq_ignore_ascii_case(name))
-            .map(|f| f.state)
-            .unwrap_or(ImplementationState::Unknown)
+    }
+
+    /// Every registered function of a module (case-insensitive).
+    pub fn functions_for(&self, module: &str) -> Vec<&FunctionMeta> {
+        self.functions
+            .iter()
+            .filter(|f| f.module.eq_ignore_ascii_case(module))
+            .collect()
     }
 }
 
@@ -204,5 +344,92 @@ mod tests {
             r.function_state("unknown.dll", "Whatever"),
             ImplementationState::Unknown
         );
+    }
+
+    #[test]
+    fn gen9_symbol_states_match_the_documented_research() {
+        let r = HleRegistry::with_known_entries();
+        // Only the two xmem shims are (partially) implemented.
+        assert_eq!(
+            r.function_state("xmem.dll", "XMemAlloc"),
+            ImplementationState::PartiallyImplemented
+        );
+        assert_eq!(
+            r.function_state("xmem.dll", "XMemFree"),
+            ImplementationState::PartiallyImplemented
+        );
+        // Everything else in the three investigated modules is Unknown:
+        // no reliable public interface documentation was found.
+        for symbol in [
+            "XMemAllocDefault",
+            "XMemFreeDefault",
+            "XMemVirtualAlloc",
+            "XMemAllocatePhysicalPages",
+            "XMemFreePhysicalPages",
+            "XMemMapPhysicalPages",
+            "XMemMapPhysicalPagesScatter",
+            "XMemTransferMemory",
+            "XMemGetWorkingSetStatistics",
+            "XMemIsToolsMemAvailable",
+        ] {
+            assert_eq!(
+                r.function_state("xmem.dll", symbol),
+                ImplementationState::Unknown,
+                "{symbol}"
+            );
+        }
+        for symbol in ["XGCreateTextureComputer", "XGSuggestSwizzleMode"] {
+            assert_eq!(
+                r.function_state("xg_xs.dll", symbol),
+                ImplementationState::Unknown,
+                "{symbol}"
+            );
+        }
+        for symbol in [
+            "D3D12XboxCreateDevice",
+            "D3D12ConfigureVirtualMemoryX",
+            "D3D12SerializeVersionedRootSignature",
+        ] {
+            assert_eq!(
+                r.function_state("d3d12_xs.dll", symbol),
+                ImplementationState::Unknown,
+                "{symbol}"
+            );
+        }
+        assert_eq!(
+            r.module_state("xg_xs.dll"),
+            ImplementationState::Unsupported
+        );
+    }
+
+    #[test]
+    fn every_gen9_entry_carries_evidence_and_no_ordinals_are_invented() {
+        let r = HleRegistry::with_known_entries();
+        let gen9_modules = ["xmem.dll", "xg_xs.dll", "d3d12_xs.dll"];
+        let mut checked = 0;
+        for module in gen9_modules {
+            let entries = r.functions_for(module);
+            assert!(!entries.is_empty(), "{module} must be researched");
+            for entry in entries {
+                assert!(
+                    !entry.evidence.is_empty(),
+                    "{}!{}",
+                    entry.module,
+                    entry.name
+                );
+                // Symbols are imported by name in the analysed executable;
+                // no numeric ordinal is ever recorded here.
+                assert!(
+                    entry
+                        .name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "_?@".contains(c)),
+                    "unexpected symbol name {}",
+                    entry.name
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 17, "all 17 imported symbols must be covered");
     }
 }
