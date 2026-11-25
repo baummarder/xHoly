@@ -298,13 +298,13 @@ The binding roadmap is in [ROADMAP.md](ROADMAP.md). Phase numbers 1 to 24A are h
 
 The figures below are generated from and validated against [`progress.json`](progress.json) by `src/progress.rs` (a unit test fails if this README section goes stale). Run `xholy --progress` for the same report on the command line.
 
-**Overall roadmap completion: 58.2%**
+**Overall roadmap completion: 60.2%**
 
-`[▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] 58.2%`
+`[▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] 60.2%`
 
 | Category | Weight | Completion |
 |---|---:|---:|
-| CPU & Execution | 20% | 30.0% |
+| CPU & Execution | 20% | 40.0% |
 | HLE & System Runtime | 20% | 75.0% |
 | GPU & Shader Translation | 20% | 50.0% |
 | Memory & Storage | 10% | 82.5% |

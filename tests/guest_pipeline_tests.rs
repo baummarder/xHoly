@@ -171,3 +171,169 @@ fn reports_cpu_and_memory_faults_without_retiring_faulting_instruction() {
     );
     assert_eq!(report.steps, 0);
 }
+
+#[test]
+fn stack_initialization_and_bounds_are_enforced_and_diagnosed() {
+    let bytes = pe64::synthetic_pe();
+    let session =
+        GuestSession::load("stack_init.exe", &bytes, HleRuntime::with_foundation()).unwrap();
+
+    let bounds = session
+        .cpu()
+        .stack_bounds()
+        .expect("stack bounds configured");
+    assert_eq!(bounds.top, XMEM_HEAP_BASE);
+    assert_eq!(
+        bounds.bottom,
+        XMEM_HEAP_BASE - xholy::core::pipeline::STACK_SIZE
+    );
+    assert_eq!(session.cpu().regs[reg::RSP], XMEM_HEAP_BASE - 8);
+    assert!(session.diagnostics().events().iter().any(|e| matches!(
+        e,
+        DiagnosticEvent::StackInitialized { bottom, top, initial_rsp, .. }
+            if *bottom == bounds.bottom && *top == bounds.top && *initial_rsp == XMEM_HEAP_BASE - 8
+    )));
+
+    // Stack underflow: RET at entry pops sentinel, then another RET reads >= stack_top.
+    let underflow_bytes = with_entry_code(pe64::synthetic_pe(), &[0x58, 0xC3]); // pop rax; ret
+    let mut underflow_session = GuestSession::load(
+        "underflow.exe",
+        &underflow_bytes,
+        HleRuntime::with_foundation(),
+    )
+    .unwrap();
+    let report = underflow_session.run(100);
+    assert!(matches!(
+        report.stop,
+        StopReason::Fault(CpuFault::StackUnderflow { .. })
+    ));
+
+    // Stack overflow: Entry RSP = XMEM_HEAP_BASE - 8. Subtracting (STACK_SIZE - 8) puts
+    // RSP == stack_bottom, so `push rax` faults with StackOverflow.
+    let mut code = Vec::new();
+    // 48 81 EC <imm32> : sub rsp, (STACK_SIZE - 8)
+    code.extend_from_slice(&[0x48, 0x81, 0xEC]);
+    code.extend_from_slice(&((xholy::core::pipeline::STACK_SIZE - 8) as u32).to_le_bytes());
+    code.push(0x50); // push rax -> new_rsp = stack_bottom - 8 < bottom
+    code.push(0xC3); // ret
+    let overflow_bytes = with_entry_code(pe64::synthetic_pe(), &code);
+    let mut overflow_session = GuestSession::load(
+        "overflow.exe",
+        &overflow_bytes,
+        HleRuntime::with_foundation(),
+    )
+    .unwrap();
+    let report = overflow_session.run(100);
+    assert!(matches!(
+        report.stop,
+        StopReason::Fault(CpuFault::StackOverflow { .. })
+    ));
+}
+
+#[test]
+fn hle_dispatch_reads_six_arguments_across_registers_and_stack() {
+    use xholy::core::hle::runtime::HleValue;
+
+    let mut runtime = HleRuntime::with_foundation();
+    runtime
+        .register(
+            "xmem.dll",
+            "XMemAlloc",
+            |_ctx, args| {
+                // Sum all 6 arguments to verify every register & stack slot.
+                let sum: u64 = args
+                    .iter()
+                    .map(|v| match v {
+                        HleValue::Unsigned(u) => *u,
+                        _ => 0,
+                    })
+                    .sum();
+                Ok(HleValue::Unsigned(sum))
+            },
+            "synthetic 6-arg test",
+            6,
+        )
+        .unwrap();
+
+    // Entry RSP = XMEM_HEAP_BASE - 8 (rsp % 16 == 8).
+    // Allocate 56 bytes (8 pad + 16 for 2 stack args + 32 shadow space) so pre-call RSP % 16 == 0:
+    //   sub rsp, 56
+    //   mov qword ptr [rsp+32], 50   ; arg4 (5th arg) -> after CALL push, at [rsp+40]
+    //   mov qword ptr [rsp+40], 60   ; arg5 (6th arg) -> after CALL push, at [rsp+48]
+    //   mov ecx, 10                  ; arg0
+    //   mov edx, 20                  ; arg1
+    //   mov r8d, 30                  ; arg2
+    //   mov r9d, 40                  ; arg3
+    //   call [rip + disp]            ; -> RVA 0x1600
+    //   add rsp, 56
+    //   ret
+    //
+    // Let's compute RIP-relative displacement for `call [rip+disp]` to RVA 0x1600:
+    // Entry is at RVA 0x1000.
+    let mut code: Vec<u8> = vec![
+        0x48, 0x83, 0xEC, 56, // sub rsp, 56 (4 bytes, RVA 0x1004)
+        0x48, 0xC7, 0x44, 0x24, 32, 50, 0, 0,
+        0, // mov qword [rsp+32], 50 (9 bytes, RVA 0x100D)
+        0x48, 0xC7, 0x44, 0x24, 40, 60, 0, 0,
+        0, // mov qword [rsp+40], 60 (9 bytes, RVA 0x1016)
+        0xB9, 10, 0, 0, 0, // mov ecx, 10 (5 bytes, RVA 0x101B)
+        0xBA, 20, 0, 0, 0, // mov edx, 20 (5 bytes, RVA 0x1020)
+        0x41, 0xB8, 30, 0, 0, 0, // mov r8d, 30 (6 bytes, RVA 0x1026)
+        0x41, 0xB9, 40, 0, 0, 0, // mov r9d, 40 (6 bytes, RVA 0x102C)
+        0xFF, 0x15, 0, 0, 0, 0, // call [rip+disp] (6 bytes, next_rip RVA = 0x1032)
+        0x48, 0x83, 0xC4, 56,   // add rsp, 56
+        0xC3, // ret
+    ];
+    let disp = (0x1600i32 - 0x1032i32).to_le_bytes();
+    code[0x2E..0x32].copy_from_slice(&disp);
+
+    let mut bytes = pe64::synthetic_pe_calling("xmem.dll", "XMemAlloc");
+    bytes[0x400..0x400 + code.len()].copy_from_slice(&code);
+
+    let mut session = GuestSession::load("six_args.exe", &bytes, runtime).unwrap();
+    let report = session.run(1_000);
+
+    assert_eq!(report.stop, StopReason::Returned);
+    assert_eq!(report.cpu.register(reg::RAX), 10 + 20 + 30 + 40 + 50 + 60);
+    assert_eq!(session.cpu().regs[reg::RSP], XMEM_HEAP_BASE);
+    assert!(report.events.iter().any(|e| matches!(
+        e,
+        DiagnosticEvent::StackArgumentsRead { count: 2, values, .. } if values == &[50, 60]
+    )));
+}
+
+#[test]
+fn strict_abi_and_unsupported_conventions_fail_explicitly() {
+    use xholy::core::pipeline::abi::{AbiFault, CallingConvention};
+
+    // 1. Strict Microsoft x64 rejects synthetic_pe_calling because it doesn't align RSP / allocate shadow space.
+    let bytes = pe64::synthetic_pe_calling("xmem.dll", "XMemAlloc");
+    let mut session =
+        GuestSession::load("strict.exe", &bytes, HleRuntime::with_foundation()).unwrap();
+    session.set_calling_convention(CallingConvention::MicrosoftX64 {
+        strict_prologue: true,
+    });
+    let report = session.run(1_000);
+    assert!(matches!(
+        report.stop,
+        StopReason::AbiFault(AbiFault::MisalignedStack {
+            expected_mod16: 8,
+            ..
+        })
+    ));
+    assert!(report
+        .events
+        .iter()
+        .any(|e| matches!(e, DiagnosticEvent::AbiFault { .. })));
+
+    // 2. Unsupported calling convention fails explicitly.
+    let mut unsupported_session =
+        GuestSession::load("sysv.exe", &bytes, HleRuntime::with_foundation()).unwrap();
+    unsupported_session.set_calling_convention(CallingConvention::Unsupported("System V AMD64"));
+    let report = unsupported_session.run(1_000);
+    assert!(matches!(
+        report.stop,
+        StopReason::AbiFault(AbiFault::UnsupportedConvention { ref convention })
+            if convention == "System V AMD64"
+    ));
+}

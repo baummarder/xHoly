@@ -30,6 +30,37 @@ pub enum DiagnosticEvent {
         /// Evidence-based Xbox GDK hint.
         xbox_gdk: bool,
     },
+    /// The guest stack was initialized with explicit bounds and return sentinel.
+    StackInitialized {
+        /// Lower bound of the guest stack (inclusive).
+        bottom: u64,
+        /// Upper bound of the guest stack (exclusive).
+        top: u64,
+        /// Initial `RSP` after pushing the entry return sentinel.
+        initial_rsp: u64,
+        /// Sentinel address pushed onto the stack.
+        sentinel: u64,
+    },
+    /// Stack-passed arguments were read for an HLE dispatch (`arity > 4`).
+    StackArgumentsRead {
+        /// Requested module.
+        module: String,
+        /// Requested symbol.
+        symbol: String,
+        /// Callee-entry `RSP` from which the stack frame was read.
+        rsp: u64,
+        /// Number of stack-passed arguments read.
+        count: usize,
+        /// Values read from the stack (indices `4..`).
+        values: Vec<u64>,
+    },
+    /// An ABI rule (alignment, shadow space, stack args, convention) failed.
+    AbiFault {
+        /// Instruction pointer at the HLE transition.
+        rip: u64,
+        /// Human-readable ABI failure description.
+        description: String,
+    },
     /// One import was bound to an IAT slot and classified.
     ImportResolved {
         /// Importing module.
@@ -87,6 +118,31 @@ impl DiagnosticEvent {
                 "[load] base={base:#x} size={size:#x} entry={entry_va:#x} \
                  imports={imports} xbox_gdk={xbox_gdk}"
             ),
+            Self::StackInitialized {
+                bottom,
+                top,
+                initial_rsp,
+                sentinel,
+            } => format!(
+                "[stack] bounds={bottom:#x}..{top:#x} initial_rsp={initial_rsp:#x} sentinel={sentinel:#x}"
+            ),
+            Self::StackArgumentsRead {
+                module,
+                symbol,
+                rsp,
+                count,
+                values,
+            } => {
+                let vals = values
+                    .iter()
+                    .map(|v| format!("{v:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("[stack-args] {module}!{symbol} rsp={rsp:#x} count={count} [{vals}]")
+            }
+            Self::AbiFault { rip, description } => {
+                format!("[abi-fault] {rip:#x}: {description}")
+            }
             Self::ImportResolved {
                 module,
                 symbol,

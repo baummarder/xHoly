@@ -160,6 +160,67 @@ pub enum CpuFault {
         /// Address of the faulting instruction.
         rip: u64,
     },
+    /// A stack push or call moved `RSP` below the configured stack bottom.
+    StackOverflow {
+        /// Target `RSP` that overflowed.
+        rsp: u64,
+        /// Lower bound of the guest stack (inclusive).
+        bottom: u64,
+        /// Upper bound of the guest stack (exclusive).
+        top: u64,
+        /// Address of the faulting instruction.
+        rip: u64,
+    },
+    /// A stack pop or return read at or above the configured stack top.
+    StackUnderflow {
+        /// `RSP` at the time of the underflow.
+        rsp: u64,
+        /// Lower bound of the guest stack (inclusive).
+        bottom: u64,
+        /// Upper bound of the guest stack (exclusive).
+        top: u64,
+        /// Address of the faulting instruction.
+        rip: u64,
+    },
+    /// `RSP` violated a required stack alignment constraint.
+    MisalignedStack {
+        /// Observed `RSP`.
+        rsp: u64,
+        /// Required alignment in bytes.
+        required_align: u64,
+        /// Address of the faulting instruction.
+        rip: u64,
+    },
+}
+
+/// Configured guest stack bounds `[bottom, top)` in guest virtual address space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct StackBounds {
+    /// Lowest valid stack byte address (inclusive).
+    pub bottom: u64,
+    /// One byte past the highest valid stack byte address (exclusive).
+    pub top: u64,
+}
+
+impl StackBounds {
+    /// Create validated stack bounds; returns `None` if `bottom >= top`.
+    pub fn new(bottom: u64, top: u64) -> Option<Self> {
+        if bottom < top {
+            Some(Self { bottom, top })
+        } else {
+            None
+        }
+    }
+
+    /// Total stack size in bytes.
+    pub fn size(&self) -> u64 {
+        self.top - self.bottom
+    }
+
+    /// True when `[addr, addr + len)` lies completely within `[bottom, top)`.
+    pub fn contains_range(&self, addr: u64, len: u64) -> bool {
+        addr >= self.bottom && addr.checked_add(len).is_some_and(|end| end <= self.top)
+    }
 }
 
 impl fmt::Display for CpuFault {
@@ -180,6 +241,32 @@ impl fmt::Display for CpuFault {
                 f,
                 "guest memory {} failed at {addr:#x} (instruction at {rip:#x})",
                 if *write { "write" } else { "read" }
+            ),
+            Self::StackOverflow {
+                rsp,
+                bottom,
+                top,
+                rip,
+            } => write!(
+                f,
+                "guest stack overflow at rsp={rsp:#x} (bounds {bottom:#x}..{top:#x}, instruction at {rip:#x})"
+            ),
+            Self::StackUnderflow {
+                rsp,
+                bottom,
+                top,
+                rip,
+            } => write!(
+                f,
+                "guest stack underflow at rsp={rsp:#x} (bounds {bottom:#x}..{top:#x}, instruction at {rip:#x})"
+            ),
+            Self::MisalignedStack {
+                rsp,
+                required_align,
+                rip,
+            } => write!(
+                f,
+                "misaligned guest stack rsp={rsp:#x} (required {required_align}-byte alignment, instruction at {rip:#x})"
             ),
         }
     }
@@ -338,6 +425,8 @@ pub struct X64Cpu {
     pub instructions: u64,
     /// Guest addresses whose indirect call is an HLE transition point.
     hle_slots: BTreeSet<u64>,
+    /// Optional stack bounds `[bottom, top)` enforced on push/pop/call/ret.
+    stack_bounds: Option<StackBounds>,
 }
 
 impl Default for X64Cpu {
@@ -356,7 +445,18 @@ impl X64Cpu {
             halted: false,
             instructions: 0,
             hle_slots: BTreeSet::new(),
+            stack_bounds: None,
         }
+    }
+
+    /// Configure explicit `[bottom, top)` bounds for stack operations.
+    pub fn set_stack_bounds(&mut self, bounds: Option<StackBounds>) {
+        self.stack_bounds = bounds;
+    }
+
+    /// Configured guest stack bounds, if any.
+    pub fn stack_bounds(&self) -> Option<StackBounds> {
+        self.stack_bounds
     }
 
     /// Registers holding the first `count` arguments (max 4).
@@ -932,7 +1032,32 @@ impl X64Cpu {
         value: u64,
         rip: u64,
     ) -> Result<(), CpuFault> {
-        let new_rsp = self.regs[reg::RSP].wrapping_sub(8);
+        let Some(new_rsp) = self.regs[reg::RSP].checked_sub(8) else {
+            return Err(CpuFault::StackOverflow {
+                rsp: 0,
+                bottom: self.stack_bounds.map_or(0, |b| b.bottom),
+                top: self.stack_bounds.map_or(0, |b| b.top),
+                rip,
+            });
+        };
+        if let Some(bounds) = self.stack_bounds {
+            if new_rsp < bounds.bottom {
+                return Err(CpuFault::StackOverflow {
+                    rsp: new_rsp,
+                    bottom: bounds.bottom,
+                    top: bounds.top,
+                    rip,
+                });
+            }
+            if new_rsp.checked_add(8).is_none_or(|end| end > bounds.top) {
+                return Err(CpuFault::StackUnderflow {
+                    rsp: new_rsp,
+                    bottom: bounds.bottom,
+                    top: bounds.top,
+                    rip,
+                });
+            }
+        }
         if !mem.write_u64(new_rsp, value) {
             return Err(CpuFault::Memory {
                 addr: new_rsp,
@@ -947,6 +1072,24 @@ impl X64Cpu {
     /// Pop a `u64` from the guest stack.
     fn pop<M: GuestMemory>(&mut self, mem: &M, rip: u64) -> Result<u64, CpuFault> {
         let rsp = self.regs[reg::RSP];
+        if let Some(bounds) = self.stack_bounds {
+            if rsp < bounds.bottom {
+                return Err(CpuFault::StackOverflow {
+                    rsp,
+                    bottom: bounds.bottom,
+                    top: bounds.top,
+                    rip,
+                });
+            }
+            if rsp.checked_add(8).is_none_or(|end| end > bounds.top) {
+                return Err(CpuFault::StackUnderflow {
+                    rsp,
+                    bottom: bounds.bottom,
+                    top: bounds.top,
+                    rip,
+                });
+            }
+        }
         let value = mem.read_u64(rsp).ok_or(CpuFault::Memory {
             addr: rsp,
             write: false,

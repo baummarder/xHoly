@@ -41,15 +41,17 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::core::cpu::x64::{reg, CpuFault, StepOutcome, X64Cpu};
+use crate::core::cpu::x64::{reg, CpuFault, StackBounds, StepOutcome, X64Cpu};
 use crate::core::hle::runtime::{DispatchStatus, HleRuntime, HleValue};
 use crate::core::hle::xmem::{GuestHeap, XMEM_HEAP_BASE};
 use crate::core::hle::ImplementationState;
 use crate::core::loader::pe64::{self, Pe64Error};
 use crate::core::memory::{regions, GuestMemory, Memory};
+use crate::core::pipeline::abi::{read_hle_arguments, AbiFault, CallingConvention};
 use crate::core::pipeline::diagnostics::{describe_fault, DiagnosticEvent, Diagnostics};
 use crate::core::pipeline::imports::{resolve_imports, ResolvedImport};
 
+pub mod abi;
 pub mod diagnostics;
 pub mod imports;
 
@@ -146,6 +148,8 @@ pub enum StopReason {
     },
     /// The CPU raised a structured fault.
     Fault(CpuFault),
+    /// An ABI rule (stack alignment, shadow space, stack args, convention) failed.
+    AbiFault(AbiFault),
 }
 
 impl fmt::Display for StopReason {
@@ -165,6 +169,7 @@ impl fmt::Display for StopReason {
                 detail,
             } => write!(f, "HLE dispatch failed for {module}!{symbol}: {detail}"),
             Self::Fault(fault) => write!(f, "CPU fault: {fault}"),
+            Self::AbiFault(fault) => write!(f, "ABI fault: {fault}"),
         }
     }
 }
@@ -328,6 +333,7 @@ pub struct GuestSession {
     /// transition points; the CPU never sees module or symbol).
     slots: BTreeMap<u64, usize>,
     imports: Vec<ResolvedImport>,
+    calling_convention: CallingConvention,
     diagnostics: Diagnostics,
 }
 
@@ -395,12 +401,15 @@ impl GuestSession {
         // CPU: entry point, stack with the return sentinel, and the
         // registered IAT slots as HLE transition points.
         let entry_va = base + u64::from(image.entry_rva);
+        let stack_bottom = XMEM_HEAP_BASE - STACK_SIZE;
+        let stack_top = XMEM_HEAP_BASE;
         let mut cpu = X64Cpu::new();
         cpu.rip = entry_va;
+        cpu.set_stack_bounds(StackBounds::new(stack_bottom, stack_top));
         // The stack grows downwards from the top of the resident
         // window (one byte past its last addressable byte is fine: the
         // first push writes below it).
-        cpu.regs[reg::RSP] = XMEM_HEAP_BASE;
+        cpu.regs[reg::RSP] = stack_top;
         cpu.push(&mut memory, ENTRY_RETURN_SENTINEL, entry_va)
             .map_err(LoadError::StackSetup)?;
         cpu.set_hle_slots(slots.keys().copied());
@@ -412,6 +421,12 @@ impl GuestSession {
             entry_va,
             imports: imports.len(),
             xbox_gdk: image.looks_like_xbox_gdk(),
+        });
+        diagnostics.push(DiagnosticEvent::StackInitialized {
+            bottom: stack_bottom,
+            top: stack_top,
+            initial_rsp: cpu.regs[reg::RSP],
+            sentinel: ENTRY_RETURN_SENTINEL,
         });
         for import in &imports {
             diagnostics.push(DiagnosticEvent::ImportResolved {
@@ -436,6 +451,7 @@ impl GuestSession {
             runtime,
             slots,
             imports,
+            calling_convention: CallingConvention::default(),
             diagnostics,
         })
     }
@@ -468,6 +484,16 @@ impl GuestSession {
     /// Ordered diagnostics (load, imports, dispatches, faults, stop).
     pub fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
+    }
+
+    /// Configured calling convention for HLE transitions.
+    pub fn calling_convention(&self) -> CallingConvention {
+        self.calling_convention
+    }
+
+    /// Configure the calling convention used for HLE transitions.
+    pub fn set_calling_convention(&mut self, convention: CallingConvention) {
+        self.calling_convention = convention;
     }
 
     /// The routed guest address space (flat window + xmem heap).
@@ -559,15 +585,47 @@ impl GuestSession {
             }
         };
 
-        // Arguments come from the documented x64 argument registers,
-        // limited to the implementation's declared arity. Symbols with
-        // no registered implementation (unsupported/unknown) receive no
-        // arguments at all — there is nothing to pass them to.
+        // Arguments come from the configured calling convention
+        // (`CallingConvention::MicrosoftX64` reads RCX, RDX, R8, R9 and
+        // stack arguments 4.. after the 32-byte shadow space). Symbols
+        // with no registered implementation receive no arguments.
         let arg_values = match self
             .runtime
             .implementation_arity(&import.module, &import.symbol)
         {
-            Some(arity) => self.cpu.read_args(usize::from(arity)),
+            Some(arity) => {
+                let arity = usize::from(arity);
+                let extracted = {
+                    let space = GuestSpace {
+                        flat: &mut self.memory,
+                        heap: &mut self.runtime.context().xmem,
+                    };
+                    read_hle_arguments(&self.cpu, &space, self.calling_convention, arity)
+                };
+                match extracted {
+                    Ok(values) => {
+                        if values.len() > crate::core::cpu::x64::ARG_REGISTERS.len() {
+                            let stack_vals =
+                                values[crate::core::cpu::x64::ARG_REGISTERS.len()..].to_vec();
+                            self.diagnostics.push(DiagnosticEvent::StackArgumentsRead {
+                                module: import.module.clone(),
+                                symbol: import.symbol.clone(),
+                                rsp: self.cpu.regs[reg::RSP],
+                                count: stack_vals.len(),
+                                values: stack_vals,
+                            });
+                        }
+                        values
+                    }
+                    Err(abi_fault) => {
+                        self.diagnostics.push(DiagnosticEvent::AbiFault {
+                            rip: self.cpu.rip,
+                            description: abi_fault.to_string(),
+                        });
+                        return Some(StopReason::AbiFault(abi_fault));
+                    }
+                }
+            }
             None => Vec::new(),
         };
         let hle_args: Vec<HleValue> = arg_values.iter().copied().map(HleValue::Unsigned).collect();
@@ -646,6 +704,9 @@ fn fault_rip(fault: &CpuFault) -> u64 {
         CpuFault::FetchOutOfBounds { rip } => *rip,
         CpuFault::IllegalInstruction { rip, .. } => *rip,
         CpuFault::Memory { rip, .. } => *rip,
+        CpuFault::StackOverflow { rip, .. } => *rip,
+        CpuFault::StackUnderflow { rip, .. } => *rip,
+        CpuFault::MisalignedStack { rip, .. } => *rip,
     }
 }
 

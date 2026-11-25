@@ -119,10 +119,10 @@ impl Default for HleContext {
 }
 
 /// Maximum number of integer arguments an HLE call may read from the
-/// CPU: the Microsoft x64 convention passes the first four in
-/// `RCX, RDX, R8, R9` and xHoly does not model the shadow space or
-/// stack arguments (see `crate::core::cpu::x64`).
-pub const MAX_HLE_ARGS: usize = 4;
+/// guest: the first four come from `RCX, RDX, R8, R9` and arguments
+/// `4..` are read from the Microsoft x64 stack frame (after the 32-byte
+/// shadow space). Bounded to 16 to prevent unbounded stack reads.
+pub const MAX_HLE_ARGS: usize = 16;
 
 /// Reason a registration was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -502,15 +502,16 @@ mod tests {
     #[test]
     fn arity_beyond_the_argument_registers_is_refused() {
         let mut rt = HleRuntime::new(HleRegistry::with_known_entries());
+        let too_many = (MAX_HLE_ARGS + 1) as u8;
         assert_eq!(
-            rt.register("xmem.dll", "XMemAlloc", xmem_alloc, "test", 5),
-            Err(RegisterError::ArityOutOfRange(5))
+            rt.register("xmem.dll", "XMemAlloc", xmem_alloc, "test", too_many),
+            Err(RegisterError::ArityOutOfRange(too_many))
         );
         assert!(rt.implemented_symbols().is_empty());
-        // The maximum is accepted and reported back.
-        rt.register("xmem.dll", "XMemAlloc", xmem_alloc, "test", 4)
-            .expect("arity 4 fits the x64 argument registers");
-        assert_eq!(rt.implementation_arity("xmem.dll", "XMemAlloc"), Some(4));
+        // Registering with stack-passed arguments (arity > 4) is accepted up to MAX_HLE_ARGS.
+        rt.register("xmem.dll", "XMemAlloc", xmem_alloc, "test", 6)
+            .expect("arity 6 fits within MAX_HLE_ARGS");
+        assert_eq!(rt.implementation_arity("xmem.dll", "XMemAlloc"), Some(6));
         assert_eq!(rt.implementation_arity("xmem.dll", "XMemFree"), None);
         assert!(rt.implementation_arity("nope.dll", "nope").is_none());
     }
