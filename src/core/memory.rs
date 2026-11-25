@@ -95,6 +95,58 @@ impl Default for Memory {
     }
 }
 
+/// Byte-level access to a guest address space.
+///
+/// This is the seam the guest CPU fetches and executes through: every
+/// address is a **guest** address, and implementations never accept or
+/// return host pointers. Implementations exist for the flat resident
+/// window ([`Memory`]), the xmem guest heap
+/// ([`crate::core::hle::xmem::GuestHeap`]) and the routed façade used
+/// by the guest execution pipeline.
+pub trait GuestMemory {
+    /// Read `len` bytes at `addr`, or `None` when the range is not
+    /// readable (unmapped, out of bounds, protection denied).
+    fn read_bytes(&self, addr: GuestAddr, len: usize) -> Option<Vec<u8>>;
+
+    /// Write `data` at `addr`; `false` when the range is not writable.
+    fn write_bytes(&mut self, addr: GuestAddr, data: &[u8]) -> bool;
+
+    /// Read one little-endian `u64`.
+    fn read_u64(&self, addr: GuestAddr) -> Option<u64> {
+        let bytes = self.read_bytes(addr, 8)?;
+        Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    /// Write one little-endian `u64`.
+    fn write_u64(&mut self, addr: GuestAddr, value: u64) -> bool {
+        self.write_bytes(addr, &value.to_le_bytes())
+    }
+}
+
+impl GuestMemory for Memory {
+    fn read_bytes(&self, addr: GuestAddr, len: usize) -> Option<Vec<u8>> {
+        let off = self.offset(addr)?;
+        let end = off.checked_add(len)?;
+        self.data.get(off..end).map(<[u8]>::to_vec)
+    }
+
+    fn write_bytes(&mut self, addr: GuestAddr, data: &[u8]) -> bool {
+        let Some(off) = self.offset(addr) else {
+            return false;
+        };
+        let Some(end) = off.checked_add(data.len()) else {
+            return false;
+        };
+        match self.data.get_mut(off..end) {
+            Some(dst) => {
+                dst.copy_from_slice(data);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 impl Index<Range<GuestAddr>> for Memory {
     type Output = [u8];
     fn index(&self, range: Range<GuestAddr>) -> &[u8] {
@@ -131,5 +183,27 @@ mod tests {
         let mut mem = Memory::new();
         mem.map_image(b"\x01\x02\x03\x04");
         assert_eq!(mem.read(regions::TITLE, 4), Some(0x0403_0201));
+    }
+
+    #[test]
+    fn guest_memory_trait_reads_and_writes_bytes() {
+        let mut mem = Memory::new();
+        assert!(mem.write_bytes(regions::TITLE, b"guest"));
+        assert_eq!(
+            mem.read_bytes(regions::TITLE, 5).as_deref(),
+            Some(b"guest".as_slice())
+        );
+        assert!(mem.write_u64(regions::TITLE + 0x10, 0x0123_4567_89AB_CDEF));
+        assert_eq!(
+            mem.read_u64(regions::TITLE + 0x10),
+            Some(0x0123_4567_89AB_CDEF)
+        );
+        // Guest addresses outside the resident window never resolve.
+        assert_eq!(mem.read_bytes(regions::HYPERVISOR, 4), None);
+        assert!(!mem.write_bytes(regions::IO_APERTURE, b"nope"));
+        // A range crossing the end of the window is rejected as a whole.
+        let near_end = regions::TITLE + (1024 * 1024 * 1024) - 4;
+        assert_eq!(mem.read_bytes(near_end, 8), None);
+        assert!(!mem.write_bytes(near_end, b"12345"));
     }
 }

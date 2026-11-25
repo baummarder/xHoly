@@ -298,21 +298,21 @@ The binding roadmap is in [ROADMAP.md](ROADMAP.md). Phase numbers 1 to 24A are h
 
 The figures below are generated from and validated against [`progress.json`](progress.json) by `src/progress.rs` (a unit test fails if this README section goes stale). Run `xholy --progress` for the same report on the command line.
 
-**Overall roadmap completion: 54.5%**
+**Overall roadmap completion: 58.2%**
 
-`[▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░] 54.5%`
+`[▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░] 58.2%`
 
 | Category | Weight | Completion |
 |---|---:|---:|
-| CPU & Execution | 20% | 20.0% |
+| CPU & Execution | 20% | 30.0% |
 | HLE & System Runtime | 20% | 75.0% |
 | GPU & Shader Translation | 20% | 50.0% |
-| Memory & Storage | 10% | 65.0% |
+| Memory & Storage | 10% | 82.5% |
 | Audio & Input | 10% | 50.0% |
 | Game Compatibility & Boot | 15% | 60.0% |
 | GUI & Infrastructure | 5% | 100.0% |
 
-Last verification: 2026-11-24.
+Last verification: 2026-11-25.
 
 Calculation: each task adds `weight x credit` to its category, where credit is 0 for Planned and Blocked, 0.5 for Partially Implemented, and 1 for Implemented and Verified. Task weights total 100 within each category, so the category sum is its completion percentage. Overall completion is the category completion weighted by the category weights. Everything is derived from `progress.json` by `src/progress.rs`. This measures roadmap progress only, not game compatibility, production readiness or retail boot success.
 

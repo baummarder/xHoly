@@ -384,6 +384,65 @@ pub fn file_offset(sections: &[Section], rva: u32) -> Option<usize> {
     })
 }
 
+/// Structural validation of a parsed PE32+ image.
+///
+/// [`parse`] already checks the DOS/COFF/optional headers, the machine
+/// type and the PE32+ magic. This function additionally checks the
+/// *layout* the loader is about to trust:
+///
+/// * `SizeOfImage`/`SizeOfHeaders` are consistent with the file,
+/// * every section fits inside `SizeOfImage` and inside the file,
+/// * no section overlaps the headers or a previous section,
+/// * the entry point lies inside the image.
+///
+/// It is deliberately not called from [`parse`]: read-only import
+/// analysis must keep working on any parseable file. The guest loading
+/// path calls it before mapping anything into guest memory.
+pub fn validate(image: &Pe64Image) -> Result<(), Pe64Error> {
+    if image.size_of_image == 0 {
+        return Err(Pe64Error::Malformed("SizeOfImage is zero"));
+    }
+    if image.size_of_headers == 0 || image.size_of_headers > image.size_of_image {
+        return Err(Pe64Error::Malformed("SizeOfHeaders exceeds SizeOfImage"));
+    }
+    if image.size_of_headers as usize > image.bytes.len() {
+        return Err(Pe64Error::Malformed("SizeOfHeaders exceeds file size"));
+    }
+    if image.entry_rva != 0 && image.entry_rva >= image.size_of_image {
+        return Err(Pe64Error::Malformed("entry point outside the image"));
+    }
+    // End of the mapped header region in RVA space.
+    let mut prev_end = u64::from(image.size_of_headers);
+    for section in &image.sections {
+        let span = u64::from(section.virtual_size.max(section.raw_size));
+        let start = u64::from(section.virtual_address);
+        let end = start
+            .checked_add(span)
+            .ok_or(Pe64Error::Malformed("section range overflows"))?;
+        if end > u64::from(image.size_of_image) {
+            return Err(Pe64Error::Malformed("section exceeds SizeOfImage"));
+        }
+        if section.raw_size != 0 {
+            let raw_end = u64::from(section.raw_pointer).checked_add(u64::from(section.raw_size));
+            match raw_end {
+                Some(raw_end) if raw_end > image.bytes.len() as u64 => {
+                    return Err(Pe64Error::Malformed("section raw data exceeds file size"));
+                }
+                Some(_) => {}
+                None => return Err(Pe64Error::Malformed("section raw range overflows")),
+            }
+            if u64::from(section.raw_pointer) < u64::from(image.size_of_headers) {
+                return Err(Pe64Error::Malformed("section raw data overlaps headers"));
+            }
+        }
+        if start < prev_end {
+            return Err(Pe64Error::Malformed("section overlaps a previous section"));
+        }
+        prev_end = prev_end.max(end);
+    }
+    Ok(())
+}
+
 /// Map headers and sections into a flat guest image of `SizeOfImage` bytes.
 pub fn map_image(image: &Pe64Image) -> Result<Vec<u8>, Pe64Error> {
     let mut out = vec![0u8; image.size_of_image as usize];
@@ -458,6 +517,40 @@ pub fn bind_iat(mapped: &mut [u8], rva: u32, handler: u64) -> Result<(), Pe64Err
 /// relocation, one import descriptor). All fixtures are generated from
 /// source — no third-party binaries are used.
 pub fn synthetic_pe() -> Vec<u8> {
+    build_synthetic_pe(None)
+}
+
+/// Build a synthetic PE32+ image whose entry point calls `module!symbol`
+/// through its IAT slot.
+///
+/// The generated x86-64 entry code is:
+///
+/// ```text
+/// mov  ecx, 64            ; argument 0 (Microsoft x64 convention)
+/// xor  edx, edx           ; argument 1 = 0
+/// call qword ptr [rip+X]  ; indirect call through the IAT slot
+/// mov  qword ptr [rax], 0x11
+/// ret
+/// ```
+///
+/// Limits (asserted): `module` ≤ 15 bytes, `symbol` ≤ 61 bytes. The
+/// base-relocation directory is cleared because the fixture's DIR64 test
+/// patch site overlaps the entry code. Like [`synthetic_pe`] this is a
+/// fixture generated from source — no third-party binary is involved.
+pub fn synthetic_pe_calling(module: &str, symbol: &str) -> Vec<u8> {
+    assert!(
+        module.len() <= 15,
+        "fixture module name too long: {module} (max 15 bytes)"
+    );
+    assert!(
+        symbol.len() <= 61,
+        "fixture symbol name too long: {symbol} (max 61 bytes)"
+    );
+    build_synthetic_pe(Some((module, symbol)))
+}
+
+/// Shared fixture builder; `call` selects the entry-code variant.
+fn build_synthetic_pe(call: Option<(&str, &str)>) -> Vec<u8> {
     let mut d = vec![0u8; 0x1000];
     d[0..2].copy_from_slice(b"MZ");
     d[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
@@ -490,7 +583,8 @@ pub fn synthetic_pe() -> Vec<u8> {
     d[sec + 20..sec + 24].copy_from_slice(&0x400u32.to_le_bytes());
     d[sec + 36..sec + 40].copy_from_slice(&0x6000_0020u32.to_le_bytes());
     // synthetic guest code at RVA 0x1000 (file 0x400): mov eax,42; ret
-    d[0x400..0x408].copy_from_slice(&[0xB8, 42, 0, 0, 0xC3, 0, 0, 0]);
+    // (B8 + 4-byte little-endian imm32 + C3).
+    d[0x400..0x408].copy_from_slice(&[0xB8, 42, 0, 0, 0, 0xC3, 0, 0]);
     // import descriptor at file 0x800: name RVA 0x1500, IAT 0x1600
     d[0x800 + 12..0x800 + 16].copy_from_slice(&0x1500u32.to_le_bytes());
     d[0x800 + 16..0x800 + 20].copy_from_slice(&0x1600u32.to_le_bytes());
@@ -503,10 +597,36 @@ pub fn synthetic_pe() -> Vec<u8> {
     d[0x900..0x910].copy_from_slice(b"d3d12_xs.dll\0\0\0\0");
     d[0x910..0x912].copy_from_slice(&0u16.to_le_bytes());
     d[0x912..0x924].copy_from_slice(b"D3D12CreateDevice\0");
-    // relocation block at file 0xB00: page 0x1000, size 12, DIR64 at 0x1004
+    // relocation block at file 0xB00: page 0x1000, size 12, DIR64 at 0x1008
+    // (kept clear of the 6-byte entry code at 0x1000..0x1006).
     d[0xB00..0xB04].copy_from_slice(&0x1000u32.to_le_bytes());
     d[0xB04..0xB08].copy_from_slice(&12u32.to_le_bytes());
-    d[0xB08..0xB0A].copy_from_slice(&((RELOC_DIR64 << 12) | 4u16).to_le_bytes());
+    d[0xB08..0xB0A].copy_from_slice(&((RELOC_DIR64 << 12) | 8u16).to_le_bytes());
+
+    if let Some((module, symbol)) = call {
+        // Import the requested symbol instead of d3d12_xs.dll's default.
+        // The hint/name entry moves to RVA 0x1530 (file 0x930) so symbols
+        // of any realistic length fit; the IAT slot follows it.
+        d[0x900..0x900 + module.len()].copy_from_slice(module.as_bytes());
+        d[0x900 + module.len()] = 0;
+        d[0x930..0x932].copy_from_slice(&0u16.to_le_bytes());
+        d[0x932..0x932 + symbol.len()].copy_from_slice(symbol.as_bytes());
+        d[0x932 + symbol.len()] = 0;
+        d[0xA00..0xA08].copy_from_slice(&0x1530u64.to_le_bytes());
+        // The entry code below occupies the bytes used by the DIR64
+        // relocation patch site of `synthetic_pe`, so drop the
+        // relocation directory for this variant.
+        d[opt + 112 + 40..opt + 112 + 48].fill(0);
+        // Entry code at RVA 0x1000 (file 0x400).
+        let code: &[u8] = &[
+            0xB9, 0x40, 0x00, 0x00, 0x00, // mov  ecx, 64
+            0x31, 0xD2, //                   xor  edx, edx
+            0xFF, 0x15, 0xF3, 0x05, 0x00, 0x00, // call [rip+0x5f3] -> RVA 0x1600
+            0x48, 0xC7, 0x00, 0x11, 0x00, 0x00, 0x00, // mov qword [rax], 0x11
+            0xC3, //                         ret
+        ];
+        d[0x400..0x400 + code.len()].copy_from_slice(code);
+    }
     d
 }
 
@@ -545,7 +665,7 @@ mod tests {
         let image = parse(&synthetic_pe()).unwrap();
         let mapped = map_image(&image).unwrap();
         assert_eq!(mapped.len(), 0x3000);
-        assert_eq!(&mapped[0x1000..0x1008], &[0xB8, 42, 0, 0, 0xC3, 0, 0, 0]);
+        assert_eq!(&mapped[0x1000..0x1008], &[0xB8, 42, 0, 0, 0, 0xC3, 0, 0]);
     }
 
     #[test]
@@ -553,11 +673,13 @@ mod tests {
         let mut image = parse(&synthetic_pe()).unwrap();
         let mut mapped = map_image(&image).unwrap();
         // relocate to a different base; patch site initially zero.
-        mapped[0x1004..0x100C].fill(0);
+        mapped[0x1008..0x1010].fill(0);
         let n = apply_relocations(&mut mapped, &image, 0x1_5000_0000).unwrap();
         assert_eq!(n, 1);
-        let value = u64::from_le_bytes(mapped[0x1004..0x100C].try_into().unwrap());
+        let value = u64::from_le_bytes(mapped[0x1008..0x1010].try_into().unwrap());
         assert_eq!(value, 0x1000_0000);
+        // Entry code at 0x1000..0x1006 must remain intact after relocation.
+        assert_eq!(&mapped[0x1000..0x1006], &[0xB8, 42, 0, 0, 0, 0xC3]);
         image.image_base = 0x1_5000_0000;
         assert_eq!(
             apply_relocations(&mut mapped, &image, 0x1_5000_0000).unwrap(),
@@ -579,5 +701,88 @@ mod tests {
             u64::from_le_bytes(mapped[0x1600..0x1608].try_into().unwrap()),
             0xDEAD_BEEF
         );
+    }
+
+    #[test]
+    fn validate_accepts_the_synthetic_image() {
+        let image = parse(&synthetic_pe()).unwrap();
+        validate(&image).expect("fixture must be structurally valid");
+        let calling = parse(&synthetic_pe_calling("xmem.dll", "XMemAlloc")).unwrap();
+        validate(&calling).expect("call fixture must be structurally valid");
+    }
+
+    #[test]
+    fn hle_call_fixture_carries_the_requested_import_and_real_code() {
+        let image = parse(&synthetic_pe_calling("xmem.dll", "XMemAlloc")).unwrap();
+        assert_eq!(image.imports[0].dll, "xmem.dll");
+        assert_eq!(image.imports[0].symbols.len(), 1);
+        let name_rva = match image.imports[0].symbols[0] {
+            Import::ByName(rva) => rva,
+            Import::ByOrdinal(o) => panic!("expected import by name, got ordinal {o}"),
+        };
+        assert_eq!(image.import_name(name_rva).as_deref(), Some("XMemAlloc"));
+        // No base relocations: the entry code owns those bytes.
+        assert!(image.relocations.is_empty());
+        // mov ecx, 64 ; xor edx, edx ; call [rip+disp] ; mov [rax], 0x11 ; ret
+        let code = image.read_rva(0x1000, 21).expect("entry code");
+        assert_eq!(&code[0..5], &[0xB9, 0x40, 0x00, 0x00, 0x00]);
+        assert_eq!(&code[5..7], &[0x31, 0xD2]);
+        assert_eq!(&code[7..13], &[0xFF, 0x15, 0xF3, 0x05, 0x00, 0x00]);
+        assert_eq!(code[20], 0xC3, "fixture ends with ret");
+        // The indirect call targets the IAT slot: 0x100D + 0x5F3 = 0x1600.
+        assert_eq!(image.imports[0].first_thunk, 0x1600);
+    }
+
+    #[test]
+    fn validate_rejects_structurally_broken_images() {
+        // Entry point outside the image.
+        let mut image = parse(&synthetic_pe()).unwrap();
+        image.entry_rva = image.size_of_image;
+        assert!(matches!(
+            validate(&image),
+            Err(Pe64Error::Malformed("entry point outside the image"))
+        ));
+
+        // Section extending past SizeOfImage.
+        let mut image = parse(&synthetic_pe()).unwrap();
+        image.sections[0].virtual_address = 0x2F00;
+        assert!(matches!(
+            validate(&image),
+            Err(Pe64Error::Malformed("section exceeds SizeOfImage"))
+        ));
+
+        // Section raw data extending past the file.
+        let mut image = parse(&synthetic_pe()).unwrap();
+        image.sections[0].raw_pointer = image.bytes.len() as u32 - 1;
+        assert!(matches!(
+            validate(&image),
+            Err(Pe64Error::Malformed("section raw data exceeds file size"))
+        ));
+
+        // Raw data overlapping the headers.
+        let mut image = parse(&synthetic_pe()).unwrap();
+        image.sections[0].raw_pointer = 0x200;
+        assert!(matches!(
+            validate(&image),
+            Err(Pe64Error::Malformed("section raw data overlaps headers"))
+        ));
+
+        // Two sections occupying the same virtual range.
+        let mut image = parse(&synthetic_pe()).unwrap();
+        let mut overlap = image.sections[0].clone();
+        overlap.virtual_address = 0x1800;
+        image.sections.push(overlap);
+        assert!(matches!(
+            validate(&image),
+            Err(Pe64Error::Malformed("section overlaps a previous section"))
+        ));
+
+        // Headers larger than the image.
+        let mut image = parse(&synthetic_pe()).unwrap();
+        image.size_of_headers = image.size_of_image + 1;
+        assert!(matches!(
+            validate(&image),
+            Err(Pe64Error::Malformed("SizeOfHeaders exceeds SizeOfImage"))
+        ));
     }
 }

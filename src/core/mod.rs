@@ -10,6 +10,7 @@ pub mod kernel;
 pub mod loader;
 pub mod memory;
 pub mod native;
+pub mod pipeline;
 #[cfg(any(test, feature = "legacy-xbox360"))]
 pub mod ppc;
 pub mod shader;

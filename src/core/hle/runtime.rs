@@ -21,6 +21,7 @@
 
 use super::xmem::{GuestHeap, HeapError, DEFAULT_ALIGNMENT};
 use super::{HleRegistry, ImplementationState};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -69,7 +70,7 @@ impl fmt::Display for HleFault {
 }
 
 /// Outcome of one dispatch attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DispatchStatus {
     /// The implementation ran and succeeded; `value` is set.
     Completed,
@@ -117,6 +118,12 @@ impl Default for HleContext {
     }
 }
 
+/// Maximum number of integer arguments an HLE call may read from the
+/// CPU: the Microsoft x64 convention passes the first four in
+/// `RCX, RDX, R8, R9` and xHoly does not model the shadow space or
+/// stack arguments (see `crate::core::cpu::x64`).
+pub const MAX_HLE_ARGS: usize = 4;
+
 /// Reason a registration was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisterError {
@@ -124,6 +131,8 @@ pub enum RegisterError {
     NotInRegistry,
     /// The registry does not claim this symbol is implemented.
     WrongState(ImplementationState),
+    /// The declared arity exceeds [`MAX_HLE_ARGS`].
+    ArityOutOfRange(u8),
 }
 
 impl fmt::Display for RegisterError {
@@ -134,6 +143,10 @@ impl fmt::Display for RegisterError {
                 f,
                 "registry state {} does not allow an implementation",
                 s.label()
+            ),
+            Self::ArityOutOfRange(arity) => write!(
+                f,
+                "arity {arity} exceeds the {MAX_HLE_ARGS} integer argument registers"
             ),
         }
     }
@@ -156,6 +169,8 @@ pub struct DispatchStats {
 struct Registered {
     func: HleFunction,
     evidence: &'static str,
+    /// Number of integer arguments the implementation reads.
+    arity: u8,
 }
 
 /// The Gen9 HLE dispatch runtime.
@@ -185,10 +200,10 @@ impl HleRuntime {
     pub fn with_foundation() -> Self {
         let mut runtime = Self::new(HleRegistry::with_known_entries());
         runtime
-            .register("xmem.dll", "XMemAlloc", xmem_alloc, SHIM_EVIDENCE)
+            .register("xmem.dll", "XMemAlloc", xmem_alloc, SHIM_EVIDENCE, 2)
             .expect("XMemAlloc must be a partially implemented registry entry");
         runtime
-            .register("xmem.dll", "XMemFree", xmem_free, SHIM_EVIDENCE)
+            .register("xmem.dll", "XMemFree", xmem_free, SHIM_EVIDENCE, 2)
             .expect("XMemFree must be a partially implemented registry entry");
         runtime
     }
@@ -203,15 +218,27 @@ impl HleRuntime {
         &mut self.context
     }
 
-    /// Register an implementation. Refused unless the registry already
+    /// Read-only access to the guest context (reports and diagnostics).
+    pub fn context_ref(&self) -> &HleContext {
+        &self.context
+    }
+
+    /// Register an implementation with its integer argument count
+    /// (`0..=`[`MAX_HLE_ARGS`]). Refused unless the registry already
     /// claims the symbol is implemented or partially implemented, so a
     /// placeholder can never be advertised as working.
+    ///
+    /// The arity is how many of `RCX, RDX, R8, R9` the guest execution
+    /// pipeline reads before dispatching; it is metadata about the
+    /// implementation, not a claim about any undocumented calling
+    /// convention (see `crate::core::cpu::x64`).
     pub fn register(
         &mut self,
         module: &str,
         symbol: &str,
         func: HleFunction,
         evidence: &'static str,
+        arity: u8,
     ) -> Result<(), RegisterError> {
         let meta = self
             .registry
@@ -221,9 +248,16 @@ impl HleRuntime {
             ImplementationState::Implemented | ImplementationState::PartiallyImplemented => {}
             other => return Err(RegisterError::WrongState(other)),
         }
+        if usize::from(arity) > MAX_HLE_ARGS {
+            return Err(RegisterError::ArityOutOfRange(arity));
+        }
         self.impls.insert(
             (module.to_lowercase(), symbol.to_lowercase()),
-            Registered { func, evidence },
+            Registered {
+                func,
+                evidence,
+                arity,
+            },
         );
         Ok(())
     }
@@ -233,6 +267,13 @@ impl HleRuntime {
         let mut keys: Vec<(String, String)> = self.impls.keys().cloned().collect();
         keys.sort();
         keys
+    }
+
+    /// Declared argument count of a registered implementation.
+    pub fn implementation_arity(&self, module: &str, symbol: &str) -> Option<u8> {
+        self.impls
+            .get(&(module.to_lowercase(), symbol.to_lowercase()))
+            .map(|r| r.arity)
     }
 
     /// Look up an implementation's evidence without calling it.
@@ -436,20 +477,49 @@ mod tests {
         let mut rt = HleRuntime::new(HleRegistry::with_known_entries());
         // Unknown symbol: refused.
         assert_eq!(
-            rt.register("xmem.dll", "XMemNotAFunction", xmem_alloc, "test"),
+            rt.register("xmem.dll", "XMemNotAFunction", xmem_alloc, "test", 2),
             Err(RegisterError::NotInRegistry)
         );
         // Registry says Unknown: refused, no placeholder may be installed.
         assert_eq!(
-            rt.register("xmem.dll", "XMemVirtualAlloc", xmem_alloc, "test"),
+            rt.register("xmem.dll", "XMemVirtualAlloc", xmem_alloc, "test", 2),
             Err(RegisterError::WrongState(ImplementationState::Unknown))
         );
         // Unsupported module entry: refused.
         assert_eq!(
-            rt.register("d3d12_xs.dll", "D3D12XboxCreateDevice", xmem_alloc, "test"),
+            rt.register(
+                "d3d12_xs.dll",
+                "D3D12XboxCreateDevice",
+                xmem_alloc,
+                "test",
+                2
+            ),
             Err(RegisterError::WrongState(ImplementationState::Unknown))
         );
         assert!(rt.implemented_symbols().is_empty());
+    }
+
+    #[test]
+    fn arity_beyond_the_argument_registers_is_refused() {
+        let mut rt = HleRuntime::new(HleRegistry::with_known_entries());
+        assert_eq!(
+            rt.register("xmem.dll", "XMemAlloc", xmem_alloc, "test", 5),
+            Err(RegisterError::ArityOutOfRange(5))
+        );
+        assert!(rt.implemented_symbols().is_empty());
+        // The maximum is accepted and reported back.
+        rt.register("xmem.dll", "XMemAlloc", xmem_alloc, "test", 4)
+            .expect("arity 4 fits the x64 argument registers");
+        assert_eq!(rt.implementation_arity("xmem.dll", "XMemAlloc"), Some(4));
+        assert_eq!(rt.implementation_arity("xmem.dll", "XMemFree"), None);
+        assert!(rt.implementation_arity("nope.dll", "nope").is_none());
+    }
+
+    #[test]
+    fn foundation_declares_the_two_argument_xmem_signatures() {
+        let rt = HleRuntime::with_foundation();
+        assert_eq!(rt.implementation_arity("xmem.dll", "XMemAlloc"), Some(2));
+        assert_eq!(rt.implementation_arity("xmem.dll", "XMemFree"), Some(2));
     }
 
     #[test]

@@ -344,6 +344,16 @@ impl GuestHeap {
     }
 }
 
+impl crate::core::memory::GuestMemory for GuestHeap {
+    fn read_bytes(&self, addr: u64, len: usize) -> Option<Vec<u8>> {
+        self.read(addr, len).ok()
+    }
+
+    fn write_bytes(&mut self, addr: u64, data: &[u8]) -> bool {
+        self.write(addr, data).is_ok()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -450,5 +460,22 @@ mod tests {
         assert_eq!(h.validate_range(a + 31, 2), Err(HeapError::InvalidAddress));
         assert_eq!(h.validate_range(a - 1, 2), Err(HeapError::InvalidAddress));
         assert_eq!(h.validate_range(a, 0), Err(HeapError::InvalidSize));
+    }
+
+    #[test]
+    fn implements_the_guest_memory_trait() {
+        use crate::core::memory::GuestMemory;
+        let mut h = heap();
+        let a = h.alloc(32, 16, 0).unwrap();
+        assert!(h.write_u64(a, 0x0123_4567_89AB_CDEF));
+        assert_eq!(h.read_u64(a), Some(0x0123_4567_89AB_CDEF));
+        // Guest addresses inside the region but without an allocation
+        // never resolve, and neither do addresses outside the region.
+        assert_eq!(h.read_bytes(XMEM_HEAP_BASE + 0x8000, 8), None);
+        assert!(!h.write_bytes(XMEM_HEAP_BASE + 0x8000, b"x"));
+        assert_eq!(h.read_bytes(XMEM_HEAP_BASE - 8, 8), None);
+        // Freed memory is no longer accessible through the trait.
+        h.free(a).unwrap();
+        assert_eq!(h.read_bytes(a, 8), None);
     }
 }

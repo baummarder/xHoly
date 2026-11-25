@@ -64,7 +64,12 @@ pub struct CompatibilityReport {
 }
 
 /// Resolve an import into a stable display string.
-fn symbol_name(image: &Pe64Image, import: &Import) -> String {
+///
+/// Ordinals are rendered exactly as the compatibility report renders
+/// them, so analysis and execution resolve an import to the same
+/// verdict. Ordinal *lookup* is not implemented: the registry records
+/// symbol names, and no verified Gen9 ordinal table is public.
+pub fn import_symbol_name(image: &Pe64Image, import: &Import) -> String {
     match import {
         Import::ByOrdinal(ordinal) => format!("ordinal 0x{ordinal:04X}"),
         Import::ByName(rva) => image
@@ -73,34 +78,44 @@ fn symbol_name(image: &Pe64Image, import: &Import) -> String {
     }
 }
 
+/// The single source of truth for one import's verdict.
+///
+/// An explicit function-level registry entry always wins — including an
+/// explicit `Unknown` research verdict. Only symbols with **no** entry
+/// fall back to the module state, and only an explicitly unsupported
+/// module classifies them as unsupported: a partially implemented module
+/// must never credit functions it does not provide.
+///
+/// Both the read-only compatibility report and the guest execution
+/// pipeline call this function, so the two can never disagree.
+pub fn classify_import(
+    registry: &HleRegistry,
+    module: &str,
+    symbol: &str,
+) -> (ImplementationState, String) {
+    let module_meta = registry.module_meta(module);
+    let function_meta = registry.function_meta(module, symbol);
+    let state = match function_meta {
+        Some(meta) => meta.state,
+        None if module_meta.map(|m| m.state) == Some(ImplementationState::Unsupported) => {
+            ImplementationState::Unsupported
+        }
+        None => ImplementationState::Unknown,
+    };
+    let evidence = function_meta
+        .map(|f| f.evidence.clone())
+        .or_else(|| module_meta.map(|m| m.evidence.clone()))
+        .unwrap_or_default();
+    (state, evidence)
+}
+
 /// Compare every parsed import against the HLE registry.
 pub fn analyze_imports(image: &Pe64Image, registry: &HleRegistry) -> ImportAnalysis {
     let mut out = ImportAnalysis::default();
     for descriptor in &image.imports {
-        let module_meta = registry.module_meta(&descriptor.dll);
-        let module_state = module_meta
-            .map(|m| m.state)
-            .unwrap_or(ImplementationState::Unknown);
         for symbol in &descriptor.symbols {
-            let name = symbol_name(image, symbol);
-            // An explicit function entry always wins — including an
-            // explicit `Unknown` research verdict. Only symbols with no
-            // entry at all fall back to the module state, and only an
-            // explicitly unsupported module may classify them as
-            // unsupported: a partially implemented module must never
-            // credit functions it does not provide.
-            let function_meta = registry.function_meta(&descriptor.dll, &name);
-            let state = match function_meta {
-                Some(meta) => meta.state,
-                None if module_state == ImplementationState::Unsupported => {
-                    ImplementationState::Unsupported
-                }
-                None => ImplementationState::Unknown,
-            };
-            let evidence = function_meta
-                .map(|f| f.evidence.clone())
-                .or_else(|| module_meta.map(|m| m.evidence.clone()))
-                .unwrap_or_default();
+            let name = import_symbol_name(image, symbol);
+            let (state, evidence) = classify_import(registry, &descriptor.dll, &name);
             let entry = AnalyzedImport {
                 module: descriptor.dll.clone(),
                 symbol: name,

@@ -5,6 +5,14 @@
 //! translator"). This scaffold implements an interpreter-style stub that
 //! decodes a minimal instruction subset so the emulation loop, memory
 //! subsystem, and GPU pipeline can be exercised end-to-end.
+//!
+//! CPU layers in this crate:
+//! * [`Cpu`] — the Phase-1 scaffold decoder driving the GUI loop,
+//! * [`arm64`] / [`interpreter`] — the AArch64 subset used by the game
+//!   demos,
+//! * [`x64`] — the x86-64 subset interpreter used by the guest
+//!   execution pipeline (Phase 29),
+//! * [`crate::jit`] — the x86-64 → WASM JIT research branch.
 
 use crate::core::memory::{GuestAddr, Memory};
 use crate::gpu::GpuContext;
@@ -12,6 +20,7 @@ use crate::gpu::GpuContext;
 pub mod arm64;
 pub mod interpreter;
 pub mod translator;
+pub mod x64;
 
 /// Number of architectural registers exposed to the translator.
 pub const REGISTER_COUNT: usize = 32;
