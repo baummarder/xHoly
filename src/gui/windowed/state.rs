@@ -1,6 +1,8 @@
 //! Windowed GUI state — Phase 5.
 
 use crate::core::execution::GuestFrame;
+use crate::core::pipeline::trace::TraceEventFilter;
+use crate::core::pipeline::ExecutionReport;
 use crate::gui::scarletx::BootProgress;
 use crate::gui::{GameListItem, GuiTheme};
 use std::time::SystemTime;
@@ -87,6 +89,88 @@ impl LogFilter {
     }
 }
 
+/// Top-level sub-mode inside `GuiView::Logs` (DIAGNOSTICS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiagnosticsTab {
+    /// Emulator console log output.
+    #[default]
+    Console,
+    /// Structured HLE Trace Viewer.
+    HleTrace,
+}
+
+impl DiagnosticsTab {
+    /// All sub-modes in UI order.
+    pub const ALL: [Self; 2] = [Self::Console, Self::HleTrace];
+
+    /// Chip label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Console => "CONSOLE",
+            Self::HleTrace => "HLE TRACE",
+        }
+    }
+
+    /// Parse a chip label.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "CONSOLE" => Some(Self::Console),
+            "HLE TRACE" => Some(Self::HleTrace),
+            _ => None,
+        }
+    }
+}
+
+/// Sub-panels inside the HLE Trace Viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TracePanel {
+    /// Event timeline + detail inspector.
+    #[default]
+    Timeline,
+    /// CPU register & stack inspection.
+    Registers,
+    /// Import resolution overview.
+    Imports,
+    /// HLE dispatch call overview.
+    HleCalls,
+    /// CPU/ABI faults & stop reason inspection.
+    Faults,
+}
+
+impl TracePanel {
+    /// All trace panels in UI order.
+    pub const ALL: [Self; 5] = [
+        Self::Timeline,
+        Self::Registers,
+        Self::Imports,
+        Self::HleCalls,
+        Self::Faults,
+    ];
+
+    /// Tab label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Timeline => "TIMELINE",
+            Self::Registers => "REGISTERS",
+            Self::Imports => "IMPORTS",
+            Self::HleCalls => "HLE CALLS",
+            Self::Faults => "FAULTS",
+        }
+    }
+
+    /// Parse a tab label.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "TIMELINE" => Some(Self::Timeline),
+            "REGISTERS" => Some(Self::Registers),
+            "IMPORTS" => Some(Self::Imports),
+            "HLE CALLS" => Some(Self::HleCalls),
+            "FAULTS" => Some(Self::Faults),
+            _ => None,
+        }
+    }
+}
+
 /// Mutable state for the windowed GUI.
 #[derive(Debug)]
 pub struct WindowedGuiState {
@@ -150,6 +234,16 @@ pub struct WindowedGuiState {
     pub search: String,
     /// Diagnostics level filter.
     pub log_filter: LogFilter,
+    /// Active sub-mode in `GuiView::Logs` (Console vs HLE Trace Viewer).
+    pub diagnostics_tab: DiagnosticsTab,
+    /// Active sub-panel in the HLE Trace Viewer.
+    pub trace_panel: TracePanel,
+    /// Event-type filter for the HLE Trace Viewer timeline.
+    pub trace_filter: TraceEventFilter,
+    /// Selected row index within the filtered trace events.
+    pub trace_selected: usize,
+    /// Loaded execution report for the HLE Trace Viewer.
+    pub trace_report: Option<ExecutionReport>,
 }
 
 impl Default for WindowedGuiState {
@@ -184,6 +278,11 @@ impl Default for WindowedGuiState {
             view: GuiView::Home,
             search: String::new(),
             log_filter: LogFilter::All,
+            diagnostics_tab: DiagnosticsTab::Console,
+            trace_panel: TracePanel::Timeline,
+            trace_filter: TraceEventFilter::All,
+            trace_selected: 0,
+            trace_report: None,
         }
     }
 }
@@ -223,5 +322,12 @@ impl WindowedGuiState {
     /// Toggle cheat engine.
     pub fn toggle_cheats(&mut self) {
         self.cheat_engine_enabled = !self.cheat_engine_enabled;
+    }
+
+    /// Attach an [`ExecutionReport`] to the HLE Trace Viewer and switch to it.
+    pub fn set_trace_report(&mut self, report: ExecutionReport) {
+        self.trace_report = Some(report);
+        self.diagnostics_tab = DiagnosticsTab::HleTrace;
+        self.trace_selected = 0;
     }
 }

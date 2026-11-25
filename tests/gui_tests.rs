@@ -144,3 +144,45 @@ fn hit_test_button_rects() {
     let (rect, _) = &layout.buttons[0];
     assert!(rect.contains(rect.x + rect.w / 2, rect.y + rect.h / 2));
 }
+
+#[test]
+fn hle_trace_viewer_renders_empty_state_and_all_panels() {
+    use xholy::core::hle::runtime::HleRuntime;
+    use xholy::core::loader::pe64;
+    use xholy::core::pipeline::GuestSession;
+    use xholy::gui::windowed::state::{DiagnosticsTab, TracePanel};
+
+    // Empty state (no trace loaded).
+    let empty_state = WindowedGuiState {
+        view: GuiView::Logs,
+        diagnostics_tab: DiagnosticsTab::HleTrace,
+        ..Default::default()
+    };
+    let (fb, layout) = ui::composite(&empty_state, 1280, 720);
+    assert_eq!(fb.len(), 1280 * 720 * 4);
+    assert_eq!(layout.diag_tabs.len(), 2);
+
+    // Populated trace across all 5 panels.
+    let bytes = pe64::synthetic_pe_calling("xmem.dll", "XMemAlloc");
+    let mut session =
+        GuestSession::load("trace_gui.exe", &bytes, HleRuntime::with_foundation()).unwrap();
+    let report = session.run(1_000);
+
+    let mut state = WindowedGuiState {
+        view: GuiView::Logs,
+        ..Default::default()
+    };
+    state.set_trace_report(report);
+    assert_eq!(state.diagnostics_tab, DiagnosticsTab::HleTrace);
+
+    for panel in TracePanel::ALL {
+        state.trace_panel = panel;
+        let (fb, layout) = ui::composite(&state, 1280, 720);
+        assert_eq!(fb.len(), 1280 * 720 * 4);
+        assert_eq!(layout.trace_panels.len(), 5);
+        if panel == TracePanel::Timeline {
+            assert_eq!(layout.trace_filters.len(), 6);
+            assert!(!layout.trace_events.is_empty());
+        }
+    }
+}

@@ -75,3 +75,63 @@ fn analyze_json_is_machine_readable_and_does_not_modify_the_file() {
     );
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn trace_command_exports_json_and_text_without_modifying_guest() {
+    let bytes = xholy::core::loader::pe64::synthetic_pe_calling("xmem.dll", "XMemAlloc");
+    let path = temp_file("trace_guest.exe");
+    let out_path = temp_file("trace_out.json");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let json_out = xholy()
+        .arg("--trace")
+        .arg(&path)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        json_out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json_out.stdout).expect("valid trace JSON");
+    assert_eq!(parsed["stop"], "Returned");
+    assert!(parsed["cpu"]["regs"].is_array());
+    assert!(parsed["events"].is_array());
+
+    let text_out = xholy().arg("--trace").arg(&path).output().unwrap();
+    assert!(text_out.status.success());
+    let text = String::from_utf8_lossy(&text_out.stdout);
+    assert!(text.contains("[hle] xmem.dll!XMemAlloc"), "{text}");
+
+    let file_out = xholy()
+        .arg("--trace")
+        .arg(&path)
+        .arg("--json")
+        .arg("--trace-out")
+        .arg(&out_path)
+        .output()
+        .unwrap();
+    assert!(file_out.status.success());
+    let written = std::fs::read_to_string(&out_path).unwrap();
+    assert!(written.contains("\"Returned\""), "{written}");
+
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        bytes,
+        "trace export must not modify the guest binary"
+    );
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
+fn trace_command_missing_file_fails_cleanly() {
+    let out = xholy()
+        .args(["--trace", "definitely-missing-trace-guest.exe"])
+        .output()
+        .expect("run xholy --trace");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot read"));
+}

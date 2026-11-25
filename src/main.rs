@@ -20,8 +20,16 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     analyze: Option<std::path::PathBuf>,
 
-    /// With --analyze: print JSON instead of the text summary.
-    #[arg(long, requires = "analyze")]
+    /// Execute a PE32+ file in the bounded x86-64 HLE pipeline and export its trace.
+    #[arg(long, value_name = "PATH")]
+    trace: Option<std::path::PathBuf>,
+
+    /// Optional output path for --trace (prints to stdout if omitted).
+    #[arg(long, value_name = "PATH", requires = "trace")]
+    trace_out: Option<std::path::PathBuf>,
+
+    /// With --analyze or --trace: print JSON instead of the text summary.
+    #[arg(long)]
     json: bool,
     /// Path to a game image or disc (e.g. .iso, .xvc, directory)
     image: Option<PathBuf>,
@@ -227,6 +235,36 @@ fn main() {
                 eprintln!("xHoly: {e}");
                 std::process::exit(1);
             }
+        }
+        return;
+    }
+    if let Some(path) = args.trace.as_deref() {
+        let max_steps = args.max_steps.unwrap_or(10_000);
+        let report = match xholy::core::pipeline::trace::run_pe_file_trace(path, max_steps) {
+            Ok(report) => report,
+            Err(e) => {
+                eprintln!("xHoly: {e}");
+                std::process::exit(1);
+            }
+        };
+        let rendered = if args.json {
+            match xholy::core::pipeline::trace::export_json(&report) {
+                Ok(text) => format!("{text}\n"),
+                Err(e) => {
+                    eprintln!("xHoly: cannot serialise trace: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            xholy::core::pipeline::trace::export_text(&report)
+        };
+        if let Some(out_path) = args.trace_out.as_deref() {
+            if let Err(e) = std::fs::write(out_path, rendered.as_bytes()) {
+                eprintln!("xHoly: cannot write trace to {}: {e}", out_path.display());
+                std::process::exit(1);
+            }
+        } else {
+            print!("{rendered}");
         }
         return;
     }

@@ -54,6 +54,7 @@ use crate::core::pipeline::imports::{resolve_imports, ResolvedImport};
 pub mod abi;
 pub mod diagnostics;
 pub mod imports;
+pub mod trace;
 
 /// Size of the guest stack reserved below the xmem heap region.
 ///

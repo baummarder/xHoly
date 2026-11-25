@@ -555,6 +555,45 @@ impl WindowApp {
                 return;
             }
         }
+        // Diagnostics sub-mode chips (CONSOLE / HLE TRACE)
+        for (rect, label) in &layout.diag_tabs {
+            if rect.contains(mx, my) {
+                if let Some(tab) = state::DiagnosticsTab::parse(label) {
+                    self.state.diagnostics_tab = tab;
+                }
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+        // HLE Trace Viewer sub-panel tabs
+        for (rect, label) in &layout.trace_panels {
+            if rect.contains(mx, my) {
+                if let Some(panel) = state::TracePanel::parse(label) {
+                    self.state.trace_panel = panel;
+                }
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+        // HLE Trace Viewer event filter chips
+        for (rect, label) in &layout.trace_filters {
+            if rect.contains(mx, my) {
+                if let Some(filter) = crate::core::pipeline::trace::TraceEventFilter::parse(label) {
+                    self.state.trace_filter = filter;
+                    self.state.trace_selected = 0;
+                }
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+        // HLE Trace Viewer timeline rows
+        for (rect, idx) in &layout.trace_events {
+            if rect.contains(mx, my) {
+                self.state.trace_selected = *idx;
+                self.input.mouse_down = false;
+                return;
+            }
+        }
         // Cover grid (Game Library)
         for (rect, idx) in &layout.covers {
             if rect.contains(mx, my) {

@@ -7,7 +7,14 @@
 //! shown; performance values appear only while an emulation is running.
 
 use super::preview::{render_game_preview, scale_rgba};
-use super::state::{GuiView, LogFilter, WindowedGuiState};
+use super::state::{DiagnosticsTab, GuiView, LogFilter, TracePanel, WindowedGuiState};
+use crate::core::cpu::x64::register_name;
+use crate::core::hle::ImplementationState;
+use crate::core::pipeline::diagnostics::DiagnosticEvent;
+use crate::core::pipeline::trace::{
+    event_detail_lines, filter_events, import_summary, stack_bounds_from_report, TraceEventFilter,
+};
+use crate::core::pipeline::ExecutionReport;
 use crate::gui::thumbnails;
 use crate::gui::GameListItem;
 use crate::theme::{self, Rgba};
@@ -54,6 +61,14 @@ pub struct UiLayout {
     pub covers: Vec<(Rect, usize)>,
     /// Log filter chips paired with their labels.
     pub filters: Vec<(Rect, &'static str)>,
+    /// Diagnostics sub-mode chips (`CONSOLE` / `HLE TRACE`).
+    pub diag_tabs: Vec<(Rect, &'static str)>,
+    /// HLE Trace Viewer sub-panel tabs.
+    pub trace_panels: Vec<(Rect, &'static str)>,
+    /// HLE Trace Viewer event-type filter chips.
+    pub trace_filters: Vec<(Rect, &'static str)>,
+    /// HLE Trace Viewer timeline rows paired with their filtered index.
+    pub trace_events: Vec<(Rect, usize)>,
     /// Buttons of the emulation overlay.
     pub menu: Vec<(Rect, &'static str)>,
     /// Bounds of the preview area.
@@ -896,8 +911,40 @@ fn draw_logs(
     area: &Rect,
     layout: &mut UiLayout,
 ) {
-    let mut cx = area.x;
-    let cy = area.y;
+    // Sub-mode chips: CONSOLE | HLE TRACE
+    let mut mx = area.x;
+    for tab in DiagnosticsTab::ALL {
+        let label = tab.label();
+        let tw = text_width(label, 1) + 32;
+        let r = Rect {
+            x: mx,
+            y: area.y,
+            w: tw,
+            h: 28,
+        };
+        let active = state.diagnostics_tab == tab;
+        let bg = if active { PINK } else { CARD };
+        let col = if active { BG } else { MUTED };
+        fill_rect_rounded(fb, w, r.x, r.y, r.w, r.h, 14, bg);
+        draw_text(fb, w, h, r.x + 16, r.y + 10, label, col, 1);
+        layout.diag_tabs.push((r, label));
+        mx += tw + 10;
+    }
+
+    let body = Rect {
+        x: area.x,
+        y: area.y + 40,
+        w: area.w,
+        h: area.h.saturating_sub(40),
+    };
+
+    if state.diagnostics_tab == DiagnosticsTab::HleTrace {
+        draw_hle_trace(fb, w, h, state, &body, layout);
+        return;
+    }
+
+    let mut cx = body.x;
+    let cy = body.y;
     for (label, filter) in LOG_CHIPS {
         let cw = text_width(label, 1) + 36;
         let r = Rect {
@@ -918,8 +965,8 @@ fn draw_logs(
         cx += cw + 12;
     }
 
-    let mut y = area.y + 56;
-    let bottom = area.y + area.h;
+    let mut y = body.y + 48;
+    let bottom = body.y + body.h;
     let max_rows = (bottom.saturating_sub(y) / 26) as usize;
     let visible: Vec<&String> = state
         .console_log
@@ -934,10 +981,10 @@ fn draw_logs(
         } else {
             "NO ENTRIES MATCH THIS FILTER"
         };
-        draw_text(fb, w, h, area.x, y, msg, MUTED, 1);
+        draw_text(fb, w, h, body.x, y, msg, MUTED, 1);
         return;
     }
-    let max_chars = (area.w.saturating_sub(120) / 9) as usize;
+    let max_chars = (body.w.saturating_sub(120) / 9) as usize;
     for line in visible {
         let sev = severity(line);
         let color = match sev {
@@ -945,16 +992,428 @@ fn draw_logs(
             "WRN" => YELLOW,
             _ => ACCENT,
         };
-        fill_rect_rounded(fb, w, area.x, y, 46, 18, 6, color);
-        draw_text(fb, w, h, area.x + 10, y + 4, sev, BG, 1);
+        fill_rect_rounded(fb, w, body.x, y, 46, 18, 6, color);
+        draw_text(fb, w, h, body.x + 10, y + 4, sev, BG, 1);
         draw_text(
             fb,
             w,
             h,
-            area.x + 62,
+            body.x + 62,
             y + 4,
             &truncate(line, max_chars),
             TEXT,
+            1,
+        );
+        y += 26;
+    }
+}
+
+fn draw_hle_trace(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    state: &WindowedGuiState,
+    area: &Rect,
+    layout: &mut UiLayout,
+) {
+    let Some(report) = &state.trace_report else {
+        fill_rect_rounded(fb, w, area.x, area.y, area.w, 88, 12, PANEL);
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 20,
+            area.y + 20,
+            "NO HLE TRACE LOADED",
+            TEXT,
+            1,
+        );
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 20,
+            area.y + 48,
+            "RUN A SYNTHETIC GUEST OR EXPORT VIA CLI: XHOLY --TRACE <EXE> [--JSON]",
+            MUTED,
+            1,
+        );
+        return;
+    };
+
+    // Summary bar: image, entry, RIP, steps, stop reason
+    fill_rect_rounded(fb, w, area.x, area.y, area.w, 40, 10, PANEL);
+    let summary_line = format!(
+        "{} | ENTRY={:#X} | RIP={:#X} | STEPS={} | STOP={}",
+        report.image.name, report.image.entry_va, report.cpu.rip, report.steps, report.stop
+    );
+    let max_sum = (area.w.saturating_sub(32) / 8) as usize;
+    draw_text(
+        fb,
+        w,
+        h,
+        area.x + 16,
+        area.y + 14,
+        &truncate(&summary_line.to_ascii_uppercase(), max_sum),
+        TEXT,
+        1,
+    );
+
+    // Sub-panel tabs
+    let mut px = area.x;
+    let py = area.y + 50;
+    for panel in TracePanel::ALL {
+        let label = panel.label();
+        let pw = text_width(label, 1) + 28;
+        let r = Rect {
+            x: px,
+            y: py,
+            w: pw,
+            h: 28,
+        };
+        let active = state.trace_panel == panel;
+        let bg = if active { ACCENT } else { CARD };
+        let col = if active { BG } else { MUTED };
+        fill_rect_rounded(fb, w, r.x, r.y, r.w, r.h, 14, bg);
+        draw_text(fb, w, h, r.x + 14, r.y + 10, label, col, 1);
+        layout.trace_panels.push((r, label));
+        px += pw + 10;
+    }
+
+    let content = Rect {
+        x: area.x,
+        y: py + 40,
+        w: area.w,
+        h: area.h.saturating_sub(90),
+    };
+
+    match state.trace_panel {
+        TracePanel::Timeline => draw_trace_timeline(fb, w, h, state, report, &content, layout),
+        TracePanel::Registers => draw_trace_registers(fb, w, h, report, &content),
+        TracePanel::Imports => draw_trace_imports(fb, w, h, report, &content),
+        TracePanel::HleCalls => draw_trace_hle_calls(fb, w, h, report, &content),
+        TracePanel::Faults => draw_trace_faults(fb, w, h, report, &content),
+    }
+}
+
+fn event_badge(event: &DiagnosticEvent) -> (&'static str, Rgba) {
+    match event {
+        DiagnosticEvent::Loaded { .. } => ("LOAD", ACCENT),
+        DiagnosticEvent::StackInitialized { .. } => ("STCK", ACCENT),
+        DiagnosticEvent::ImportResolved { state, .. } => match state {
+            ImplementationState::Implemented | ImplementationState::PartiallyImplemented => {
+                ("IMPT", ACCENT)
+            }
+            ImplementationState::Unknown => ("IMPT", YELLOW),
+            ImplementationState::Unsupported => ("IMPT", RED),
+        },
+        DiagnosticEvent::StackArgumentsRead { .. } => ("SARG", PINK),
+        DiagnosticEvent::HleDispatch { .. } => ("HLE ", PINK),
+        DiagnosticEvent::CpuFault { .. } => ("CPUF", RED),
+        DiagnosticEvent::AbiFault { .. } => ("ABIF", RED),
+        DiagnosticEvent::Stopped { .. } => ("STOP", WHITE),
+    }
+}
+
+fn draw_trace_timeline(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    state: &WindowedGuiState,
+    report: &ExecutionReport,
+    area: &Rect,
+    layout: &mut UiLayout,
+) {
+    // Event-type filter chips
+    let mut fx = area.x;
+    for filter in TraceEventFilter::ALL {
+        let label = filter.label();
+        let fw = text_width(label, 1) + 24;
+        let r = Rect {
+            x: fx,
+            y: area.y,
+            w: fw,
+            h: 26,
+        };
+        let active = state.trace_filter == filter;
+        let bg = if active { ACCENT } else { CARD };
+        let col = if active { BG } else { MUTED };
+        fill_rect_rounded(fb, w, r.x, r.y, r.w, r.h, 13, bg);
+        draw_text(fb, w, h, r.x + 12, r.y + 9, label, col, 1);
+        layout.trace_filters.push((r, label));
+        fx += fw + 8;
+    }
+
+    let list_y = area.y + 36;
+    let list_h = area.h.saturating_sub(36);
+    let left_w = (area.w * 58 / 100).max(240);
+    let right_x = area.x + left_w + 16;
+    let right_w = area.w.saturating_sub(left_w + 16);
+
+    fill_rect_rounded(fb, w, area.x, list_y, left_w, list_h, 12, PANEL);
+    fill_rect_rounded(fb, w, right_x, list_y, right_w, list_h, 12, PANEL);
+
+    let filtered = filter_events(report, state.trace_filter, &state.search);
+    if filtered.is_empty() {
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 16,
+            list_y + 18,
+            "NO TRACE EVENTS MATCH FILTER",
+            MUTED,
+            1,
+        );
+        draw_text(
+            fb,
+            w,
+            h,
+            right_x + 16,
+            list_y + 18,
+            "NO EVENT SELECTED",
+            MUTED,
+            1,
+        );
+        return;
+    }
+
+    let selected_idx = state.trace_selected.min(filtered.len() - 1);
+    let max_rows = (list_h.saturating_sub(24) / 26) as usize;
+    let max_chars = (left_w.saturating_sub(88) / 8) as usize;
+    let mut y = list_y + 12;
+    for (row_idx, (_orig_idx, event)) in filtered.iter().take(max_rows).enumerate() {
+        let row_rect = Rect {
+            x: area.x + 8,
+            y,
+            w: left_w.saturating_sub(16),
+            h: 22,
+        };
+        if row_idx == selected_idx {
+            fill_rect_rounded(
+                fb, w, row_rect.x, row_rect.y, row_rect.w, row_rect.h, 6, CARD,
+            );
+        }
+        let (badge, color) = event_badge(event);
+        fill_rect_rounded(fb, w, row_rect.x + 4, y + 2, 46, 18, 5, color);
+        draw_text(fb, w, h, row_rect.x + 9, y + 6, badge, BG, 1);
+        draw_text(
+            fb,
+            w,
+            h,
+            row_rect.x + 58,
+            y + 6,
+            &truncate(&event.render_line().to_ascii_uppercase(), max_chars),
+            TEXT,
+            1,
+        );
+        layout.trace_events.push((row_rect, row_idx));
+        y += 26;
+    }
+
+    // Detail panel on the right
+    let (_orig, selected_event) = filtered[selected_idx];
+    let mut dy = list_y + 16;
+    let max_detail = (right_w.saturating_sub(32) / 8) as usize;
+    for line in event_detail_lines(selected_event) {
+        if dy + 20 > list_y + list_h {
+            break;
+        }
+        draw_text(
+            fb,
+            w,
+            h,
+            right_x + 16,
+            dy,
+            &truncate(&line.to_ascii_uppercase(), max_detail),
+            TEXT,
+            1,
+        );
+        dy += 22;
+    }
+}
+
+fn draw_trace_registers(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    report: &ExecutionReport,
+    area: &Rect,
+) {
+    fill_rect_rounded(fb, w, area.x, area.y, area.w, area.h, 12, PANEL);
+    let stack_str = match stack_bounds_from_report(report) {
+        Some((bottom, top, initial_rsp)) => {
+            format!("{bottom:#X}..{top:#X} (INIT={initial_rsp:#X})")
+        }
+        None => "UNAVAILABLE".into(),
+    };
+    let top_line = format!(
+        "RIP={:#018X}  RFLAGS={:#X}  INSTR={}  HALTED={}",
+        report.cpu.rip, report.cpu.rflags, report.cpu.instructions, report.cpu.halted
+    );
+    draw_text(fb, w, h, area.x + 16, area.y + 16, &top_line, ACCENT, 1);
+    draw_text(
+        fb,
+        w,
+        h,
+        area.x + 16,
+        area.y + 40,
+        &format!("STACK BOUNDS: {stack_str}"),
+        TEXT,
+        1,
+    );
+
+    let col_w = (area.w.saturating_sub(32) / 4).max(160);
+    for (i, val) in report.cpu.regs.iter().enumerate() {
+        let col = (i % 4) as u32;
+        let row = (i / 4) as u32;
+        let rx = area.x + 16 + col * col_w;
+        let ry = area.y + 76 + row * 28;
+        if ry + 20 > area.y + area.h {
+            break;
+        }
+        let name = register_name(i).to_ascii_uppercase();
+        let line = format!("{name:>3}={val:#018X}");
+        draw_text(fb, w, h, rx, ry, &line, TEXT, 1);
+    }
+}
+
+fn draw_trace_imports(fb: &mut Framebuffer, w: u32, h: u32, report: &ExecutionReport, area: &Rect) {
+    fill_rect_rounded(fb, w, area.x, area.y, area.w, area.h, 12, PANEL);
+    let summary = import_summary(report);
+    let header = format!(
+        "IMPORTS: {} TOTAL (IMPL {}, PARTIAL {}, UNSUPPORTED {}, UNKNOWN {})",
+        summary.total,
+        summary.implemented,
+        summary.partially_implemented,
+        summary.unsupported,
+        summary.unknown
+    );
+    draw_text(fb, w, h, area.x + 16, area.y + 16, &header, TEXT, 1);
+
+    let mut y = area.y + 48;
+    let max_chars = (area.w.saturating_sub(180) / 8) as usize;
+    for import in &report.imports {
+        if y + 24 > area.y + area.h {
+            break;
+        }
+        let (badge, color) = match import.state {
+            ImplementationState::Implemented => ("IMPL", ACCENT),
+            ImplementationState::PartiallyImplemented => ("PART", ACCENT),
+            ImplementationState::Unsupported => ("UNSP", RED),
+            ImplementationState::Unknown => ("UNKN", YELLOW),
+        };
+        fill_rect_rounded(fb, w, area.x + 16, y, 52, 18, 5, color);
+        draw_text(fb, w, h, area.x + 22, y + 4, badge, BG, 1);
+        let slot = import
+            .slot_va
+            .map_or_else(|| "NO SLOT".into(), |s| format!("{s:#X}"));
+        let text = format!("{}!{} [{}]", import.module, import.symbol, slot);
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 80,
+            y + 4,
+            &truncate(&text.to_ascii_uppercase(), max_chars),
+            TEXT,
+            1,
+        );
+        y += 26;
+    }
+}
+
+fn draw_trace_hle_calls(
+    fb: &mut Framebuffer,
+    w: u32,
+    h: u32,
+    report: &ExecutionReport,
+    area: &Rect,
+) {
+    fill_rect_rounded(fb, w, area.x, area.y, area.w, area.h, 12, PANEL);
+    let calls: Vec<&DiagnosticEvent> = report.dispatches().collect();
+    if calls.is_empty() {
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 16,
+            area.y + 18,
+            "NO HLE DISPATCH EVENTS RECORDED",
+            MUTED,
+            1,
+        );
+        return;
+    }
+    let mut y = area.y + 16;
+    let max_chars = (area.w.saturating_sub(32) / 8) as usize;
+    for event in calls {
+        if y + 24 > area.y + area.h {
+            break;
+        }
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 16,
+            y,
+            &truncate(&event.render_line().to_ascii_uppercase(), max_chars),
+            TEXT,
+            1,
+        );
+        y += 26;
+    }
+}
+
+fn draw_trace_faults(fb: &mut Framebuffer, w: u32, h: u32, report: &ExecutionReport, area: &Rect) {
+    fill_rect_rounded(fb, w, area.x, area.y, area.w, area.h, 12, PANEL);
+    draw_text(
+        fb,
+        w,
+        h,
+        area.x + 16,
+        area.y + 16,
+        &format!("STOP REASON: {}", report.stop).to_ascii_uppercase(),
+        TEXT,
+        1,
+    );
+    let faults: Vec<&DiagnosticEvent> = report
+        .events
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                DiagnosticEvent::CpuFault { .. } | DiagnosticEvent::AbiFault { .. }
+            )
+        })
+        .collect();
+    let mut y = area.y + 48;
+    if faults.is_empty() {
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 16,
+            y,
+            "NO CPU OR ABI FAULTS RECORDED",
+            MUTED,
+            1,
+        );
+        return;
+    }
+    let max_chars = (area.w.saturating_sub(32) / 8) as usize;
+    for fault in faults {
+        if y + 24 > area.y + area.h {
+            break;
+        }
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 16,
+            y,
+            &truncate(&fault.render_line().to_ascii_uppercase(), max_chars),
+            RED,
             1,
         );
         y += 26;
