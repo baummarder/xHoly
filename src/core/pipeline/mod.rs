@@ -262,6 +262,14 @@ impl ExecutionReport {
             }
         }
         let _ = writeln!(o, "  stop: {} after {} step(s)", self.stop, self.steps);
+        // M36.6: derived HLE counters (no schema change, bounded by the
+        // validated event list).
+        let hle = crate::core::pipeline::trace::hle_call_stats(self);
+        let _ = writeln!(
+            o,
+            "  hle calls: {} total ({} completed, {} unsupported, {} unknown, {} failed)",
+            hle.total, hle.completed, hle.unsupported, hle.unknown, hle.failed
+        );
         let _ = writeln!(o, "  cpu:");
         for line in self.cpu.render().lines() {
             let _ = writeln!(o, "    {line}");

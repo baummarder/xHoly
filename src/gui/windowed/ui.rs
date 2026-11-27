@@ -1476,6 +1476,24 @@ fn draw_trace_hle_calls(
     }
     let mut y = area.y + 16;
     let max_chars = (area.w.saturating_sub(32) / 8) as usize;
+    // M36.6: one derived stats line from the same report the trace viewer
+    // already uses — CLI text and GUI show identical counters.
+    let stats = crate::core::pipeline::trace::hle_call_stats(report);
+    let summary = format!(
+        "HLE CALLS: {} | COMPLETED {} | UNSUPPORTED {} | UNKNOWN {} | FAILED {}",
+        stats.total, stats.completed, stats.unsupported, stats.unknown, stats.failed
+    );
+    draw_text(
+        fb,
+        w,
+        h,
+        area.x + 16,
+        y,
+        &truncate(&summary, max_chars),
+        ACCENT,
+        1,
+    );
+    y += 28;
     for event in calls {
         if y + 24 > area.y + area.h {
             break;

@@ -666,6 +666,60 @@ pub fn synthetic_compute_guest() -> Vec<u8> {
     bytes
 }
 
+/// Expected result of [`synthetic_multi_hle_guest`]: 64 (saved size) + 1
+/// (first `VmTicks` value).
+pub const SYNTHETIC_MULTI_RESULT: u64 = 65;
+/// Marker the multi-HLE guest writes through its allocation.
+pub const SYNTHETIC_MULTI_MARKER: u64 = 0x22;
+
+/// Entry code of the M36 multi-module guest (RVA `0x1000`).
+///
+/// | Offset | Encoding | Meaning |
+/// |---|---|---|
+/// | 0x00 | `B9 40 00 00 00` | `mov ecx, 64` (XMemAlloc size) |
+/// | 0x05 | `31 D2` | `xor edx, edx` (attributes 0) |
+/// | 0x07 | `41 89 C8` | `mov r8d, ecx` (preserve 64) |
+/// | 0x0A | `FF 15 F0 05 00 00` | `call [0x1600]` → XMemAlloc |
+/// | 0x10 | `48 C7 00 22 00 00 00` | `mov qword [rax], 0x22` |
+/// | 0x17 | `31 C9` | `xor ecx, ecx` (VmTicks has arity 0) |
+/// | 0x19 | `FF 15 F1 05 00 00` | `call [0x1610]` → VmTicks |
+/// | 0x1F | `44 01 C0` | `add eax, r8d` (1 + 64 = 65) |
+/// | 0x22 | `C3` | `ret` |
+pub const SYNTHETIC_MULTI_CODE: &[u8] = &[
+    0xB9, 0x40, 0x00, 0x00, 0x00, // mov ecx, 64
+    0x31, 0xD2, // xor edx, edx
+    0x41, 0x89, 0xC8, // mov r8d, ecx
+    0xFF, 0x15, 0xF0, 0x05, 0x00, 0x00, // call [rip+0x5f0] -> RVA 0x1600
+    0x48, 0xC7, 0x00, 0x22, 0x00, 0x00, 0x00, // mov qword [rax], 0x22
+    0x31, 0xC9, // xor ecx, ecx
+    0xFF, 0x15, 0xF1, 0x05, 0x00, 0x00, // call [rip+0x5f1] -> RVA 0x1610
+    0x44, 0x01, 0xC0, // add eax, r8d
+    0xC3, // ret
+];
+
+/// Build a source-generated PE32+ guest with **two import descriptors**.
+///
+/// Descriptor 1: `xmem.dll!XMemAlloc` at IAT RVA `0x1600`.
+/// Descriptor 2: `xh_vm.sys.dll!VmTicks` at IAT RVA `0x1610`.
+/// Both modules are dispatched through the single HLE runtime; the second
+/// one is an explicitly named xHoly VM scaffold service, never an Xbox API.
+pub fn synthetic_multi_hle_guest() -> Vec<u8> {
+    let mut bytes = synthetic_pe_calling("xmem.dll", "XMemAlloc");
+    // Second descriptor at file 0x814 (RVA 0x1414); an all-zero descriptor
+    // at 0x828 terminates the import table.
+    bytes[0x820..0x824].copy_from_slice(&0x1520u32.to_le_bytes()); // Name RVA
+    bytes[0x824..0x828].copy_from_slice(&0x1610u32.to_le_bytes()); // FirstThunk
+                                                                   // Second DLL name and hint/name entry.
+    bytes[0x920..0x92E].copy_from_slice(b"xh_vm.sys.dll\0");
+    bytes[0x950..0x952].copy_from_slice(&0u16.to_le_bytes());
+    bytes[0x952..0x95A].copy_from_slice(b"VmTicks\0");
+    // Second IAT slot + terminator.
+    bytes[0xA10..0xA18].copy_from_slice(&0x1550u64.to_le_bytes());
+    bytes[0xA18..0xA20].fill(0);
+    bytes[0x400..0x400 + SYNTHETIC_MULTI_CODE.len()].copy_from_slice(SYNTHETIC_MULTI_CODE);
+    bytes
+}
+
 pub fn synthetic_pe_calling(module: &str, symbol: &str) -> Vec<u8> {
     assert!(
         module.len() <= 15,

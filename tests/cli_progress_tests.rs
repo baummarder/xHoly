@@ -25,7 +25,7 @@ fn progress_command_prints_roadmap_summary_without_compatibility_claims() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("Overall roadmap completion"), "{text}");
     assert!(text.contains("Roadmap progress only"), "{text}");
-    assert!(text.contains("Last verification: 2026-11-29"), "{text}");
+    assert!(text.contains("Last verification: 2026-11-30"), "{text}");
 }
 
 #[test]

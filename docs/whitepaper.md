@@ -45,7 +45,7 @@ The existing x86-64 decoder and the x86-64→WASM JIT are research subsets. Whet
 
 The AArch64 interpreter remains only as a test harness. It does not model any Xbox target.
 
-### Guest execution pipeline (M29–M35)
+### Guest execution pipeline (M29–M36)
 
 For bounded research tests, `src/core/pipeline/` drives a synthetic
 PE32+ guest end-to-end:
@@ -82,6 +82,13 @@ validation, and executes a self-authored compute guest (`RAX = 16`) with
 per-step mnemonics in the trace. The registry remains the single source of
 truth; no partially implemented function is presented as complete. See
 [milestone-35.md](milestone-35.md).
+
+Milestone 36 turns the dispatcher into a modular HLE runtime: one pure
+resolver shared by analysis and execution, bounded failure/dispatch logs,
+typed failures, and deterministic xHoly VM services (memory, guest threads,
+events, mutexes, system info) in a namespace explicitly separate from Xbox
+APIs. A synthetic guest calls two modules in sequence and returns a
+verifiable result. See [milestone-36.md](milestone-36.md).
 
 ## 4. GPU translation
 

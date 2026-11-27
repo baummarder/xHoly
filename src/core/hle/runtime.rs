@@ -96,8 +96,10 @@ pub struct DispatchResult {
     pub status: DispatchStatus,
     /// Return value — only `Some` for [`DispatchStatus::Completed`].
     pub value: Option<HleValue>,
-    /// Human-readable reason / evidence.
+    /// Human-readable reason / evidence (kept for existing reports).
     pub detail: String,
+    /// Typed failure, when the dispatch did not complete (M36.1).
+    pub failure: Option<DispatchFailure>,
 }
 
 /// Signature of an HLE implementation.
@@ -108,12 +110,18 @@ pub type HleFunction = fn(&mut HleContext, &[HleValue]) -> Result<HleValue, HleF
 pub struct HleContext {
     /// Guest heap backing the `xmem` shims.
     pub xmem: GuestHeap,
+    /// Deterministic guest thread/event/mutex state (xHoly VM service).
+    pub kernel: super::kernel::KernelContext,
+    /// Deterministic VM tick/info state (xHoly VM service).
+    pub system: super::system::SystemContext,
 }
 
 impl Default for HleContext {
     fn default() -> Self {
         Self {
             xmem: GuestHeap::with_defaults(),
+            kernel: super::kernel::KernelContext::new(),
+            system: super::system::SystemContext::new(),
         }
     }
 }
@@ -165,6 +173,63 @@ pub struct DispatchStats {
     pub failed: usize,
 }
 
+/// Maximum number of failure messages retained in the runtime log.
+///
+/// M36.1: guest input must never grow host memory without bound.
+pub const MAX_HLE_FAILURES: usize = 64;
+/// Maximum number of retained dispatch trace records.
+pub const MAX_HLE_DISPATCH_TRACE: usize = 128;
+
+/// Why a dispatch did not complete (typed, M36.1).
+///
+/// The prose `DispatchResult::detail` is kept for existing reports; this
+/// enum preserves the typed distinction between a real implementation
+/// fault and a registry claim without an implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchFailure {
+    /// A registered implementation raised a fault.
+    Fault(HleFault),
+    /// The registry claims support but no implementation is registered.
+    UnbackedClaim {
+        /// Claimed state from the registry.
+        state: ImplementationState,
+    },
+}
+
+impl fmt::Display for DispatchFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fault(fault) => write!(f, "runtime failure: {fault}"),
+            Self::UnbackedClaim { state } => write!(
+                f,
+                "registry marks {} but no implementation is registered",
+                state.label()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for HleFault {}
+impl std::error::Error for RegisterError {}
+impl std::error::Error for DispatchFailure {}
+
+/// One bounded dispatch record for diagnostics (M36.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchRecord {
+    /// Requested module.
+    pub module: String,
+    /// Requested symbol.
+    pub symbol: String,
+    /// Outcome class.
+    pub status: DispatchStatus,
+    /// Number of arguments passed to the dispatcher.
+    pub args_count: usize,
+    /// Whether a value was returned.
+    pub has_value: bool,
+    /// Short detail text (never guest memory contents).
+    pub detail: String,
+}
+
 #[derive(Debug)]
 struct Registered {
     func: HleFunction,
@@ -181,6 +246,10 @@ pub struct HleRuntime {
     impls: HashMap<(String, String), Registered>,
     stats: DispatchStats,
     failures: Vec<String>,
+    /// Number of failures dropped by the bounded log.
+    dropped_failures: usize,
+    /// Bounded record of recent dispatches (M36.1).
+    dispatch_trace: Vec<DispatchRecord>,
 }
 
 impl HleRuntime {
@@ -193,6 +262,8 @@ impl HleRuntime {
             impls: HashMap::new(),
             stats: DispatchStats::default(),
             failures: Vec::new(),
+            dropped_failures: 0,
+            dispatch_trace: Vec::new(),
         }
     }
 
@@ -205,6 +276,47 @@ impl HleRuntime {
         runtime
             .register("xmem.dll", "XMemFree", xmem_free, SHIM_EVIDENCE, 2)
             .expect("XMemFree must be a partially implemented registry entry");
+        runtime
+    }
+
+    /// Runtime with the separate xHoly VM scaffold services registered.
+    ///
+    /// This includes the Xbox foundation shims plus `xh_vm.*` services.
+    /// The names are deliberately not Xbox exports; see
+    /// [`HleRegistry::with_all_entries`].
+    pub fn with_xh_vm() -> Self {
+        const VM_EVIDENCE: &str = "src/core/hle/ (xHoly VM scaffold service; NOT an Xbox API)";
+        let mut runtime = Self::new(HleRegistry::with_all_entries());
+        runtime
+            .register("xmem.dll", "XMemAlloc", xmem_alloc, SHIM_EVIDENCE, 2)
+            .expect("XMemAlloc registry entry");
+        runtime
+            .register("xmem.dll", "XMemFree", xmem_free, SHIM_EVIDENCE, 2)
+            .expect("XMemFree registry entry");
+        let services: [(&str, &str, HleFunction, u8); 17] = [
+            ("xh_vm.mem.dll", "VmQuery", vm_query, 1),
+            ("xh_vm.mem.dll", "VmProtect", vm_protect, 2),
+            ("xh_vm.mem.dll", "VmStats", vm_stats, 0),
+            ("xh_vm.sys.dll", "VmTicks", vm_ticks, 0),
+            ("xh_vm.sys.dll", "VmInfo", vm_info, 0),
+            ("xh_vm.krn.dll", "ThreadCreate", vm_thread_create, 0),
+            ("xh_vm.krn.dll", "ThreadYield", vm_thread_yield, 1),
+            ("xh_vm.krn.dll", "ThreadSleep", vm_thread_sleep, 2),
+            ("xh_vm.krn.dll", "ThreadSuspend", vm_thread_suspend, 1),
+            ("xh_vm.krn.dll", "ThreadResume", vm_thread_resume, 1),
+            ("xh_vm.krn.dll", "ThreadExit", vm_thread_exit, 1),
+            ("xh_vm.sync.dll", "EventCreate", vm_event_create, 0),
+            ("xh_vm.sync.dll", "EventSet", vm_event_set, 1),
+            ("xh_vm.sync.dll", "EventWait", vm_event_wait, 2),
+            ("xh_vm.sync.dll", "MutexCreate", vm_mutex_create, 0),
+            ("xh_vm.sync.dll", "MutexLock", vm_mutex_lock, 3),
+            ("xh_vm.sync.dll", "MutexUnlock", vm_mutex_unlock, 2),
+        ];
+        for (module, symbol, func, arity) in services {
+            runtime
+                .register(module, symbol, func, VM_EVIDENCE, arity)
+                .expect("xHoly VM service registry entry");
+        }
         runtime
     }
 
@@ -283,13 +395,16 @@ impl HleRuntime {
             .map(|r| r.evidence)
     }
 
-    /// Dispatch one call.
+    /// Dispatch one call through the central runtime.
+    ///
+    /// M36.1: the verdict for unregistered symbols comes from the single
+    /// resolver; every outcome is recorded in a bounded diagnostic trace.
     pub fn dispatch(&mut self, module: &str, symbol: &str, args: &[HleValue]) -> DispatchResult {
         let key = (module.to_lowercase(), symbol.to_lowercase());
-        if let Some(registered) = self.impls.get(&key) {
+        let result = if let Some(registered) = self.impls.get(&key) {
             let func = registered.func;
             let evidence = registered.evidence;
-            return match func(&mut self.context, args) {
+            match func(&mut self.context, args) {
                 Ok(value) => {
                     self.stats.completed += 1;
                     // M35: add the guest-visible result/arguments to the
@@ -313,48 +428,61 @@ impl HleRuntime {
                         status: DispatchStatus::Completed,
                         value: Some(value),
                         detail,
+                        failure: None,
                     }
                 }
                 Err(fault) => {
                     self.stats.failed += 1;
-                    let detail = format!("runtime failure: {fault}");
-                    self.failures.push(format!("{module}!{symbol}: {detail}"));
+                    let failure = DispatchFailure::Fault(fault);
+                    let detail = failure.to_string();
+                    self.push_failure(module, symbol, &detail);
                     DispatchResult {
                         module: module.into(),
                         symbol: symbol.into(),
                         status: DispatchStatus::Failed,
                         value: None,
                         detail,
+                        failure: Some(failure),
                     }
                 }
-            };
-        }
-
-        if let Some(meta) = self.registry.function_meta(module, symbol) {
-            return match meta.state {
+            }
+        } else {
+            // The registry's own state decides whether an unbacked claim
+            // is a failure, unsupported or unknown. Verdict precedence
+            // still comes from the single resolver below.
+            let verdict =
+                crate::core::hle::resolve::ApiVerdict::resolve(&self.registry, module, symbol);
+            match verdict.state {
                 ImplementationState::Implemented | ImplementationState::PartiallyImplemented => {
                     self.stats.failed += 1;
-                    let detail = format!(
-                        "registry marks {} but no implementation is registered",
-                        meta.state.label()
-                    );
-                    self.failures.push(format!("{module}!{symbol}: {detail}"));
+                    let failure = DispatchFailure::UnbackedClaim {
+                        state: verdict.state,
+                    };
+                    let detail = failure.to_string();
+                    self.push_failure(module, symbol, &detail);
                     DispatchResult {
                         module: module.into(),
                         symbol: symbol.into(),
                         status: DispatchStatus::Failed,
                         value: None,
                         detail,
+                        failure: Some(failure),
                     }
                 }
                 ImplementationState::Unsupported => {
                     self.stats.unsupported += 1;
+                    let detail = if verdict.evidence.is_empty() {
+                        "unsupported".to_string()
+                    } else {
+                        format!("unsupported: {}", verdict.evidence)
+                    };
                     DispatchResult {
                         module: module.into(),
                         symbol: symbol.into(),
                         status: DispatchStatus::Unsupported,
                         value: None,
-                        detail: format!("unsupported: {}", meta.evidence),
+                        detail,
+                        failure: None,
                     }
                 }
                 ImplementationState::Unknown => {
@@ -364,40 +492,43 @@ impl HleRuntime {
                         symbol: symbol.into(),
                         status: DispatchStatus::Unknown,
                         value: None,
-                        detail: format!("unknown: {}", meta.evidence),
+                        detail: if verdict.evidence.is_empty() {
+                            "no registry entry; preserved for diagnosis".into()
+                        } else {
+                            format!("unknown: {}", verdict.evidence)
+                        },
+                        failure: None,
                     }
                 }
-            };
-        }
+            }
+        };
+        self.push_dispatch_record(&result, args.len());
+        result
+    }
 
-        // No function entry: fall back to module metadata. Only an
-        // explicitly unsupported module may classify its functions as
-        // unsupported — a partially implemented module must not inherit
-        // credit for functions it does not provide.
-        if self.registry.module_state(module) == ImplementationState::Unsupported {
-            let detail = self
-                .registry
-                .module_meta(module)
-                .map(|m| format!("unsupported module: {}", m.evidence))
-                .unwrap_or_else(|| "unsupported module".into());
-            self.stats.unsupported += 1;
-            DispatchResult {
-                module: module.into(),
-                symbol: symbol.into(),
-                status: DispatchStatus::Unsupported,
-                value: None,
-                detail,
-            }
-        } else {
-            self.stats.unknown += 1;
-            DispatchResult {
-                module: module.into(),
-                symbol: symbol.into(),
-                status: DispatchStatus::Unknown,
-                value: None,
-                detail: "no registry entry; preserved for diagnosis".into(),
-            }
+    /// Append a failure message without allowing unbounded growth.
+    fn push_failure(&mut self, module: &str, symbol: &str, detail: &str) {
+        if self.failures.len() == MAX_HLE_FAILURES {
+            self.failures.remove(0);
+            self.dropped_failures += 1;
         }
+        self.failures.push(format!("{module}!{symbol}: {detail}"));
+    }
+
+    /// Append a bounded dispatch record for diagnostics.
+    fn push_dispatch_record(&mut self, result: &DispatchResult, args_count: usize) {
+        let record = DispatchRecord {
+            module: result.module.clone(),
+            symbol: result.symbol.clone(),
+            status: result.status,
+            args_count,
+            has_value: result.value.is_some(),
+            detail: result.detail.clone(),
+        };
+        if self.dispatch_trace.len() == MAX_HLE_DISPATCH_TRACE {
+            self.dispatch_trace.remove(0);
+        }
+        self.dispatch_trace.push(record);
     }
 
     /// Current dispatch counters.
@@ -408,6 +539,34 @@ impl HleRuntime {
     /// Recorded runtime failures.
     pub fn failures(&self) -> &[String] {
         &self.failures
+    }
+
+    /// Number of failure messages dropped by the bounded log.
+    pub fn dropped_failures(&self) -> usize {
+        self.dropped_failures
+    }
+
+    /// Bounded record of recent dispatches (newest last).
+    pub fn dispatch_trace(&self) -> &[DispatchRecord] {
+        &self.dispatch_trace
+    }
+
+    /// How often a module!symbol was dispatched.
+    pub fn call_count(&self, module: &str, symbol: &str) -> usize {
+        self.dispatch_trace
+            .iter()
+            .filter(|r| {
+                r.module.eq_ignore_ascii_case(module) && r.symbol.eq_ignore_ascii_case(symbol)
+            })
+            .count()
+    }
+
+    /// Clear dispatch diagnostics between guest sessions.
+    pub fn reset_diagnostics(&mut self) {
+        self.stats = DispatchStats::default();
+        self.failures.clear();
+        self.dropped_failures = 0;
+        self.dispatch_trace.clear();
     }
 
     /// Human-readable diagnostics summary.
@@ -469,6 +628,187 @@ fn xmem_free(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFau
     };
     ctx.xmem.free(addr).map_err(|e| fault_from_heap(e, addr))?;
     Ok(HleValue::Null)
+}
+
+// --- xHoly VM services (M36) -------------------------------------------
+//
+// These functions implement xHoly-owned scaffold semantics only. They are
+// registered under `xh_vm.*` modules with evidence that explicitly says
+// "NOT an Xbox API". No Xbox signature, ordinal or return convention is
+// claimed.
+
+fn vm_query(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    let addr = match args {
+        [HleValue::Unsigned(addr)] => *addr,
+        _ => return Err(HleFault::InvalidArgument("VmQuery(pointer)")),
+    };
+    let info = ctx.xmem.query(addr).map_err(|e| fault_from_heap(e, addr))?;
+    // Guest-visible fields, never a host pointer.
+    Ok(HleValue::Unsigned(info.size))
+}
+
+fn vm_protect(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    let (addr, mode) = match args {
+        [HleValue::Unsigned(addr), HleValue::Unsigned(mode)] => (*addr, *mode),
+        _ => return Err(HleFault::InvalidArgument("VmProtect(pointer, mode)")),
+    };
+    let protection = match mode {
+        0 => super::xmem::Protection::ReadWrite,
+        1 => super::xmem::Protection::ReadOnly,
+        2 => super::xmem::Protection::NoAccess,
+        _ => return Err(HleFault::InvalidArgument("VmProtect mode 0..2")),
+    };
+    ctx.xmem
+        .set_protection(addr, protection)
+        .map_err(|e| fault_from_heap(e, addr))?;
+    Ok(HleValue::Null)
+}
+
+fn vm_stats(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    if !args.is_empty() {
+        return Err(HleFault::InvalidArgument("VmStats()"));
+    }
+    Ok(HleValue::Unsigned(ctx.xmem.stats().active as u64))
+}
+
+fn vm_ticks(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    if !args.is_empty() {
+        return Err(HleFault::InvalidArgument("VmTicks()"));
+    }
+    ctx.system.advance();
+    Ok(HleValue::Unsigned(ctx.system.ticks()))
+}
+
+fn vm_info(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    if !args.is_empty() {
+        return Err(HleFault::InvalidArgument("VmInfo()"));
+    }
+    let info = ctx.system.info();
+    // A deterministic, documented packing: major in the high word.
+    Ok(HleValue::Unsigned((info.major << 32) | info.minor))
+}
+
+fn vm_thread_create(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    if !args.is_empty() {
+        return Err(HleFault::InvalidArgument("ThreadCreate()"));
+    }
+    let id = ctx.kernel.create_thread().ok_or(HleFault::OutOfMemory)?;
+    Ok(HleValue::Unsigned(id))
+}
+
+fn vm_thread_simple(
+    ctx: &mut HleContext,
+    args: &[HleValue],
+    name: &'static str,
+) -> Result<HleValue, HleFault> {
+    let id = match args {
+        [HleValue::Unsigned(id)] => *id,
+        _ => return Err(HleFault::InvalidArgument(name)),
+    };
+    let ok = match name {
+        "ThreadYield()" => ctx.kernel.yield_thread(id),
+        "ThreadSuspend()" => ctx.kernel.suspend(id),
+        "ThreadResume()" => ctx.kernel.resume(id),
+        "ThreadExit()" => ctx.kernel.exit_thread(id),
+        _ => return Err(HleFault::Internal("unknown VM thread service".into())),
+    };
+    if !ok {
+        return Err(HleFault::InvalidAddress(id));
+    }
+    Ok(HleValue::Null)
+}
+
+fn vm_thread_yield(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    vm_thread_simple(ctx, args, "ThreadYield()")
+}
+fn vm_thread_suspend(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    vm_thread_simple(ctx, args, "ThreadSuspend()")
+}
+fn vm_thread_resume(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    vm_thread_simple(ctx, args, "ThreadResume()")
+}
+fn vm_thread_exit(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    vm_thread_simple(ctx, args, "ThreadExit()")
+}
+
+fn vm_thread_sleep(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    let (id, ticks) = match args {
+        [HleValue::Unsigned(id), HleValue::Unsigned(ticks)] => (*id, *ticks),
+        _ => return Err(HleFault::InvalidArgument("ThreadSleep(thread, ticks)")),
+    };
+    if !ctx.kernel.sleep(id, ticks) {
+        return Err(HleFault::InvalidAddress(id));
+    }
+    Ok(HleValue::Null)
+}
+
+fn vm_event_create(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    if !args.is_empty() {
+        return Err(HleFault::InvalidArgument("EventCreate()"));
+    }
+    let id = ctx.kernel.create_event().ok_or(HleFault::OutOfMemory)?;
+    Ok(HleValue::Unsigned(id))
+}
+
+fn vm_event_set(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    let id = match args {
+        [HleValue::Unsigned(id)] => *id,
+        _ => return Err(HleFault::InvalidArgument("EventSet(event)")),
+    };
+    if !ctx.kernel.set_event(id) {
+        return Err(HleFault::InvalidAddress(id));
+    }
+    Ok(HleValue::Null)
+}
+
+fn vm_event_wait(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    let (id, timeout) = match args {
+        [HleValue::Unsigned(id), HleValue::Unsigned(timeout)] => (*id, *timeout),
+        _ => return Err(HleFault::InvalidArgument("EventWait(event, ticks)")),
+    };
+    let result = ctx.kernel.wait_event(id, timeout);
+    Ok(HleValue::Unsigned(match result {
+        super::kernel::WaitResult::Ready => 0,
+        super::kernel::WaitResult::TimedOut => 1,
+        super::kernel::WaitResult::InvalidHandle => 2,
+        super::kernel::WaitResult::Deadlock => 3,
+    }))
+}
+
+fn vm_mutex_create(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    if !args.is_empty() {
+        return Err(HleFault::InvalidArgument("MutexCreate()"));
+    }
+    let id = ctx.kernel.create_mutex().ok_or(HleFault::OutOfMemory)?;
+    Ok(HleValue::Unsigned(id))
+}
+
+fn vm_mutex_lock(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    let (id, thread, timeout) = match args {
+        [HleValue::Unsigned(id), HleValue::Unsigned(thread), HleValue::Unsigned(timeout)] => {
+            (*id, *thread, *timeout)
+        }
+        _ => return Err(HleFault::InvalidArgument("MutexLock(mutex, thread, ticks)")),
+    };
+    let result = ctx.kernel.lock_mutex(id, thread, timeout);
+    Ok(HleValue::Unsigned(match result {
+        super::kernel::WaitResult::Ready => 0,
+        super::kernel::WaitResult::TimedOut => 1,
+        super::kernel::WaitResult::InvalidHandle => 2,
+        super::kernel::WaitResult::Deadlock => 3,
+    }))
+}
+
+fn vm_mutex_unlock(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFault> {
+    let (id, thread) = match args {
+        [HleValue::Unsigned(id), HleValue::Unsigned(thread)] => (*id, *thread),
+        _ => return Err(HleFault::InvalidArgument("MutexUnlock(mutex, thread)")),
+    };
+    let result = ctx.kernel.unlock_mutex(id, thread);
+    Ok(HleValue::Unsigned(match result {
+        super::kernel::WaitResult::Ready => 0,
+        _ => 2,
+    }))
 }
 
 #[cfg(test)]

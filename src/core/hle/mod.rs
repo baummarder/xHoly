@@ -9,7 +9,10 @@
 use serde::{Deserialize, Serialize};
 
 pub mod graphics;
+pub mod kernel;
+pub mod resolve;
 pub mod runtime;
+pub mod system;
 pub mod xmem;
 
 /// Implementation state of a module or function.
@@ -259,6 +262,86 @@ impl HleRegistry {
             },
         ];
         Self { modules, functions }
+    }
+
+    /// Build a registry containing **only** xHoly VM scaffold services.
+    ///
+    /// M36: these modules are deliberately named `xh_vm.*` and every
+    /// evidence string states that they are xHoly-owned, **not Xbox APIs**.
+    /// They are implemented and tested in `hle::kernel`, `hle::system` and
+    /// `hle::xmem`. They are a separate namespace: `with_known_entries()`
+    /// (the Xbox compatibility registry) remains unchanged.
+    pub fn with_xh_vm_entries() -> Self {
+        const VM_EVIDENCE: &str =
+            "xHoly VM scaffold service defined in src/core/hle/; NOT an Xbox API";
+        let modules = vec![
+            ModuleMeta {
+                name: "xh_vm.mem.dll".into(),
+                role: "xHoly VM guest-memory query and protection services".into(),
+                state: ImplementationState::Implemented,
+                evidence: VM_EVIDENCE.into(),
+            },
+            ModuleMeta {
+                name: "xh_vm.sys.dll".into(),
+                role: "xHoly VM deterministic tick and info services".into(),
+                state: ImplementationState::Implemented,
+                evidence: VM_EVIDENCE.into(),
+            },
+            ModuleMeta {
+                name: "xh_vm.krn.dll".into(),
+                role: "xHoly VM guest thread state machine".into(),
+                state: ImplementationState::Implemented,
+                evidence: VM_EVIDENCE.into(),
+            },
+            ModuleMeta {
+                name: "xh_vm.sync.dll".into(),
+                role: "xHoly VM guest events and mutexes".into(),
+                state: ImplementationState::Implemented,
+                evidence: VM_EVIDENCE.into(),
+            },
+        ];
+        let names = [
+            ("xh_vm.mem.dll", "VmQuery"),
+            ("xh_vm.mem.dll", "VmProtect"),
+            ("xh_vm.mem.dll", "VmStats"),
+            ("xh_vm.sys.dll", "VmTicks"),
+            ("xh_vm.sys.dll", "VmInfo"),
+            ("xh_vm.krn.dll", "ThreadCreate"),
+            ("xh_vm.krn.dll", "ThreadYield"),
+            ("xh_vm.krn.dll", "ThreadSleep"),
+            ("xh_vm.krn.dll", "ThreadSuspend"),
+            ("xh_vm.krn.dll", "ThreadResume"),
+            ("xh_vm.krn.dll", "ThreadExit"),
+            ("xh_vm.sync.dll", "EventCreate"),
+            ("xh_vm.sync.dll", "EventSet"),
+            ("xh_vm.sync.dll", "EventWait"),
+            ("xh_vm.sync.dll", "MutexCreate"),
+            ("xh_vm.sync.dll", "MutexLock"),
+            ("xh_vm.sync.dll", "MutexUnlock"),
+        ];
+        let functions = names
+            .iter()
+            .map(|(module, name)| FunctionMeta {
+                module: (*module).into(),
+                name: (*name).into(),
+                state: ImplementationState::Implemented,
+                evidence: VM_EVIDENCE.into(),
+            })
+            .collect();
+        Self { modules, functions }
+    }
+
+    /// Xbox registry plus the separate xHoly VM services.
+    ///
+    /// Use this only for synthetic guests that intentionally call VM
+    /// services; the read-only compatibility report and the CLI use
+    /// [`Self::with_known_entries`] so Xbox claims stay honest.
+    pub fn with_all_entries() -> Self {
+        let mut registry = Self::with_known_entries();
+        let vm = Self::with_xh_vm_entries();
+        registry.modules.extend(vm.modules);
+        registry.functions.extend(vm.functions);
+        registry
     }
 
     /// State of a module by name (case-insensitive).

@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::hle::runtime::HleRuntime;
+use crate::core::hle::runtime::{DispatchStatus, HleRuntime};
 use crate::core::hle::ImplementationState;
 use crate::core::pipeline::boot::{BootStatus, BootTrace};
 use crate::core::pipeline::diagnostics::DiagnosticEvent;
@@ -347,6 +347,42 @@ pub struct ImportSummary {
     pub unsupported: usize,
     /// Unknown / unverified imports.
     pub unknown: usize,
+}
+
+/// Derived HLE call statistics (M36.6).
+///
+/// Computed from the already validated event list, so it is bounded by the
+/// trace-file size cap and needs **no schema change**: schema v1 and v2
+/// files produce identical values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HleCallStats {
+    /// Total dispatch events.
+    pub total: usize,
+    /// Completed implementations.
+    pub completed: usize,
+    /// Explicitly unsupported calls.
+    pub unsupported: usize,
+    /// Unknown calls.
+    pub unknown: usize,
+    /// Runtime failures.
+    pub failed: usize,
+}
+
+/// Derive HLE call counts from a report without touching its data.
+pub fn hle_call_stats(report: &ExecutionReport) -> HleCallStats {
+    let mut stats = HleCallStats::default();
+    for event in report.dispatches() {
+        stats.total += 1;
+        if let DiagnosticEvent::HleDispatch { status, .. } = event {
+            match status {
+                DispatchStatus::Completed => stats.completed += 1,
+                DispatchStatus::Unsupported => stats.unsupported += 1,
+                DispatchStatus::Unknown => stats.unknown += 1,
+                DispatchStatus::Failed => stats.failed += 1,
+            }
+        }
+    }
+    stats
 }
 
 /// Compute import verdict counts from an [`ExecutionReport`].

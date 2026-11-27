@@ -438,7 +438,7 @@ mod tests {
     fn report_text_has_no_compatibility_percentage() {
         let text = report().unwrap().render_text();
         assert!(text.contains("Roadmap progress only"));
-        assert!(text.contains("Last verification: 2026-11-29"));
+        assert!(text.contains("Last verification: 2026-11-30"));
     }
 
     #[test]

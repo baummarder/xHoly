@@ -93,20 +93,9 @@ pub fn classify_import(
     module: &str,
     symbol: &str,
 ) -> (ImplementationState, String) {
-    let module_meta = registry.module_meta(module);
-    let function_meta = registry.function_meta(module, symbol);
-    let state = match function_meta {
-        Some(meta) => meta.state,
-        None if module_meta.map(|m| m.state) == Some(ImplementationState::Unsupported) => {
-            ImplementationState::Unsupported
-        }
-        None => ImplementationState::Unknown,
-    };
-    let evidence = function_meta
-        .map(|f| f.evidence.clone())
-        .or_else(|| module_meta.map(|m| m.evidence.clone()))
-        .unwrap_or_default();
-    (state, evidence)
+    // M36.1: delegate to the single resolver so the compatibility report,
+    // the guest import binder and the dispatcher share one verdict rule.
+    crate::core::hle::resolve::resolve_verdict(registry, module, symbol)
 }
 
 /// Compare every parsed import against the HLE registry.
