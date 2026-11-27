@@ -25,7 +25,7 @@ fn progress_command_prints_roadmap_summary_without_compatibility_claims() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("Overall roadmap completion"), "{text}");
     assert!(text.contains("Roadmap progress only"), "{text}");
-    assert!(text.contains("Last verification: 2026-11-28"), "{text}");
+    assert!(text.contains("Last verification: 2026-11-29"), "{text}");
 }
 
 #[test]
@@ -173,17 +173,20 @@ fn guest_test_json_is_importable_as_a_versioned_trace_file() {
     );
     let steps = boot
         .instructions()
-        .map(|(step, rip, kind)| xholy::core::pipeline::StepRecord {
-            step,
-            rip,
-            kind: kind.clone(),
-        })
+        .map(
+            |(step, rip, kind, mnemonic)| xholy::core::pipeline::StepRecord {
+                step,
+                rip,
+                kind: kind.clone(),
+                mnemonic: mnemonic.map(str::to_string),
+            },
+        )
         .collect();
     let file = xholy::core::pipeline::trace::TraceFile::from_boot(&boot, steps);
     let json = file.to_json().expect("versioned trace JSON");
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["format"], "xholy-trace");
-    assert_eq!(parsed["schema_version"], 1);
+    assert_eq!(parsed["schema_version"], 2);
     assert_eq!(parsed["kind"], "Boot");
     let imported =
         xholy::core::pipeline::trace::import_trace_file(&json).expect("versioned import");

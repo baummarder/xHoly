@@ -118,6 +118,9 @@ pub enum BootEvent {
         rip: u64,
         /// What the instruction did.
         kind: StepKind,
+        /// Best-effort mnemonic from the decoder (M35, optional).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mnemonic: Option<String>,
     },
     /// An HLE import was invoked through its IAT slot.
     HleInvocation {
@@ -195,14 +198,22 @@ impl BootEvent {
             Self::ExecutionStarted { entry_va, max_steps } => {
                 format!("[boot] cpu started: entry={entry_va:#x} max_steps={max_steps}")
             }
-            Self::InstructionExecuted { step, rip, kind } => {
+            Self::InstructionExecuted {
+                step,
+                rip,
+                kind,
+                mnemonic,
+            } => {
                 let what = match kind {
                     StepKind::Executed => "executed".into(),
                     StepKind::Halted => "halted".into(),
                     StepKind::HleCall { slot_addr } => format!("hle call via {slot_addr:#x}"),
                     StepKind::Fault { description } => format!("fault: {description}"),
                 };
-                format!("[boot] step {step}: rip={rip:#x} {what}")
+                match mnemonic {
+                    Some(m) => format!("[boot] step {step}: rip={rip:#x} {m} {what}"),
+                    None => format!("[boot] step {step}: rip={rip:#x} {what}"),
+                }
             }
             Self::HleInvocation {
                 module,
@@ -283,9 +294,14 @@ impl BootTrace {
     }
 
     /// All instruction phases in order (shortcut for tests and tooling).
-    pub fn instructions(&self) -> impl Iterator<Item = (u64, u64, &StepKind)> {
+    pub fn instructions(&self) -> impl Iterator<Item = (u64, u64, &StepKind, Option<&str>)> {
         self.events.iter().filter_map(|event| match event {
-            BootEvent::InstructionExecuted { step, rip, kind } => Some((*step, *rip, kind)),
+            BootEvent::InstructionExecuted {
+                step,
+                rip,
+                kind,
+                mnemonic,
+            } => Some((*step, *rip, kind, mnemonic.as_deref())),
             _ => None,
         })
     }
@@ -342,6 +358,7 @@ pub fn boot_guest(name: &str, bytes: &[u8], max_steps: u64) -> Result<BootTrace,
             step: record.step,
             rip: record.rip,
             kind: record.kind.clone(),
+            mnemonic: record.mnemonic.clone(),
         });
     }
     for event in &report.events {

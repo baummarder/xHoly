@@ -292,12 +292,27 @@ impl HleRuntime {
             return match func(&mut self.context, args) {
                 Ok(value) => {
                     self.stats.completed += 1;
+                    // M35: add the guest-visible result/arguments to the
+                    // diagnostic detail. No host pointer is ever exposed.
+                    let detail = match (&value, args.first()) {
+                        (HleValue::Unsigned(addr), Some(HleValue::Unsigned(attr)))
+                            if symbol.eq_ignore_ascii_case("XMemAlloc") =>
+                        {
+                            format!("implemented: {evidence} guest={addr:#x} attrs={attr:#x}")
+                        }
+                        (HleValue::Null, Some(HleValue::Unsigned(addr)))
+                            if symbol.eq_ignore_ascii_case("XMemFree") =>
+                        {
+                            format!("implemented: {evidence} freed={addr:#x}")
+                        }
+                        _ => format!("implemented: {evidence}"),
+                    };
                     DispatchResult {
                         module: module.into(),
                         symbol: symbol.into(),
                         status: DispatchStatus::Completed,
                         value: Some(value),
-                        detail: format!("implemented: {evidence}"),
+                        detail,
                     }
                 }
                 Err(fault) => {
@@ -417,11 +432,15 @@ impl HleRuntime {
 /// Evidence string for the foundation shims.
 const SHIM_EVIDENCE: &str = "src/core/hle/xmem.rs (guest heap; XMem attributes not decoded)";
 
-fn fault_from_heap(error: HeapError) -> HleFault {
+/// Map a heap error onto a guest-facing fault.
+///
+/// M35 keeps the real guest address for invalid-pointer failures instead
+/// of the former hard-coded `0`, so a bad `XMemFree` is diagnosable.
+fn fault_from_heap(error: HeapError, guest_addr: u64) -> HleFault {
     match error {
         HeapError::OutOfMemory => HleFault::OutOfMemory,
         HeapError::InvalidAddress | HeapError::NotAllocated | HeapError::DoubleFree => {
-            HleFault::InvalidAddress(0)
+            HleFault::InvalidAddress(guest_addr)
         }
         other => HleFault::Memory(other),
     }
@@ -437,7 +456,7 @@ fn xmem_alloc(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFa
     let addr = ctx
         .xmem
         .alloc(size, DEFAULT_ALIGNMENT, attributes)
-        .map_err(fault_from_heap)?;
+        .map_err(|e| fault_from_heap(e, 0))?;
     Ok(HleValue::Unsigned(addr))
 }
 
@@ -448,7 +467,7 @@ fn xmem_free(ctx: &mut HleContext, args: &[HleValue]) -> Result<HleValue, HleFau
         [HleValue::Unsigned(addr), HleValue::Unsigned(_attributes)] => *addr,
         _ => return Err(HleFault::InvalidArgument("XMemFree(pointer, attributes)")),
     };
-    ctx.xmem.free(addr).map_err(fault_from_heap)?;
+    ctx.xmem.free(addr).map_err(|e| fault_from_heap(e, addr))?;
     Ok(HleValue::Null)
 }
 

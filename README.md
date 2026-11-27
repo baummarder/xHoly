@@ -169,6 +169,11 @@ development host):
   calls and the SUCCESS/INCOMPLETE/FAILED verdict; Open, Save, Refresh
   and Clear controls perform real file actions. See
   [docs/milestone-34.md](docs/milestone-34.md).
+- **Guest execution expansion (M35)** — the bounded interpreter also
+  supports LEA, INC/DEC, MOVZX/MOVSX and SETcc. A self-authored guest
+  combines a counted loop, address arithmetic, an `XMemAlloc` HLE call and
+  a conditional result (`RAX = 16`) with per-step mnemonics in the trace.
+  See [docs/milestone-35.md](docs/milestone-35.md).
 - **Import analysis** — `--analyze` produces a read-only compatibility
   report classifying every import as implemented / partially
   implemented / unsupported / unknown, with evidence strings.
@@ -356,7 +361,7 @@ report on the command line.
 | Game Compatibility & Boot | 15% | 60.0% |
 | GUI & Infrastructure | 5% | 100.0% |
 
-Last verification: 2026-11-28.
+Last verification: 2026-11-29.
 
 Calculation: each task adds `weight x credit` to its category, where credit is 0 for Planned and Blocked, 0.5 for Partially Implemented, and 1 for Implemented and Verified. Task weights total 100 within each category, so the category sum is its completion percentage. Overall completion is the category completion weighted by the category weights. Everything is derived from `progress.json` by `src/progress.rs`. This measures roadmap progress only, not game compatibility, production readiness or retail boot success.
 

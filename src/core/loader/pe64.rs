@@ -119,8 +119,9 @@ impl Pe64Image {
     pub fn string_at(&self, rva: u32) -> Option<String> {
         let section = self.section_at(rva)?;
         let start = section.raw_pointer as usize + (rva - section.virtual_address) as usize;
-        let end = self.bytes[start..].iter().position(|b| *b == 0)? + start;
-        Some(String::from_utf8_lossy(&self.bytes[start..end]).into_owned())
+        let tail = self.bytes.get(start..)?;
+        let end = tail.iter().position(|b| *b == 0)? + start;
+        Some(String::from_utf8_lossy(self.bytes.get(start..end)?).into_owned())
     }
 
     /// Resolve an import hint/name table entry to its symbol name.
@@ -440,6 +441,30 @@ pub fn validate(image: &Pe64Image) -> Result<(), Pe64Error> {
         }
         prev_end = prev_end.max(end);
     }
+    // M35: the entry point must lie in a section marked executable, not
+    // merely anywhere inside SizeOfImage (a zero-filled gap would pass).
+    if image.entry_rva != 0 {
+        let executable = image.sections.iter().any(|section| {
+            let start = u64::from(section.virtual_address);
+            let span = u64::from(section.virtual_size.max(section.raw_size));
+            let in_section = u64::from(image.entry_rva) >= start
+                && u64::from(image.entry_rva) < start.saturating_add(span);
+            // IMAGE_SCN_MEM_EXECUTE (0x2000_0000) is required; CNT_CODE
+            // alone does not make a section executable.
+            in_section && section.characteristics & 0x2000_0000 != 0
+        });
+        if !executable {
+            return Err(Pe64Error::Malformed(
+                "entry point is not in an executable section",
+            ));
+        }
+    }
+    // Relocation sites must lie inside a mapped section.
+    for reloc in &image.relocations {
+        if image.section_at(reloc.rva).is_none() {
+            return Err(Pe64Error::Malformed("relocation site outside a section"));
+        }
+    }
     Ok(())
 }
 
@@ -472,6 +497,16 @@ pub fn apply_relocations(
     image: &Pe64Image,
     actual_base: u64,
 ) -> Result<usize, Pe64Error> {
+    // M35: reject unsupported relocation kinds even when the base is
+    // unchanged; otherwise a malformed image silently passes at its
+    // preferred base and fails only after being relocated.
+    if image
+        .relocations
+        .iter()
+        .any(|r| r.kind != RELOC_DIR64 && r.kind != RELOC_HIGHLOW)
+    {
+        return Err(Pe64Error::Unsupported("relocation type"));
+    }
     let delta = actual_base.wrapping_sub(image.image_base);
     if delta == 0 {
         return Ok(0);
@@ -573,6 +608,61 @@ pub const SYNTHETIC_BOOT_CODE: &[u8] = &[
 pub fn synthetic_boot_guest() -> Vec<u8> {
     let mut bytes = synthetic_pe_calling("xmem.dll", "XMemAlloc");
     bytes[0x400..0x400 + SYNTHETIC_BOOT_CODE.len()].copy_from_slice(SYNTHETIC_BOOT_CODE);
+    bytes
+}
+
+/// Expected guest result of [`synthetic_compute_guest`] (M35).
+///
+/// Loop sum (5 × 3 = 15) plus the `SETcc` success bit (1) = **16**.
+pub const SYNTHETIC_COMPUTE_RESULT: u64 = 16;
+
+/// Byte encoding of the M35 compute guest (RVA `0x1000`, file `0x400`).
+///
+/// | Offset | Bytes | Instruction | Purpose |
+/// |---|---|---|---|
+/// | 0x00 | `B9 03 00 00 00` | `mov ecx, 3` | loop counter |
+/// | 0x05 | `31 C0` | `xor eax, eax` | accumulator = 0 |
+/// | 0x07 | `83 C0 05` | `add eax, 5` | accumulate |
+/// | 0x0A | `FF C9` | `dec ecx` | counter-- (preserves CF) |
+/// | 0x0C | `75 F9` | `jnz -7` | loop back to 0x07 |
+/// | 0x0E | `48 8D 48 01` | `lea rcx, [rax+1]` | size = 15 + 1 = 16 (RCX = arg0) |
+/// | 0x12 | `31 D2` | `xor edx, edx` | attributes = 0 (RDX = arg1) |
+/// | 0x14 | `41 89 C0` | `mov r8d, eax` | preserve the loop sum across HLE |
+/// | 0x17 | `FF 15 <disp32>` | `call [rip+disp]` | IAT slot RVA 0x1600 |
+/// | 0x1D | `85 C0` | `test eax, eax` | pointer non-zero? |
+/// | 0x1F | `0F 95 C1` | `setnz cl` | CL = 1 on success |
+/// | 0x22 | `0F B6 C9` | `movzx ecx, cl` | zero-extend the bit |
+/// | 0x25 | `44 01 C1` | `add ecx, r8d` | ECX = 1 + 15 = 16 |
+/// | 0x28 | `89 C8` | `mov eax, ecx` | result in RAX |
+/// | 0x2A | `C3` | `ret` | sentinel |
+///
+/// The displacement at 0x19 is `0x1600 - (0x1000 + 0x1D) = 0x5E3`.
+pub const SYNTHETIC_COMPUTE_CODE: &[u8] = &[
+    0xB9, 0x03, 0x00, 0x00, 0x00, // mov ecx, 3
+    0x31, 0xC0, // xor eax, eax
+    0x83, 0xC0, 0x05, // add eax, 5
+    0xFF, 0xC9, // dec ecx
+    0x75, 0xF9, // jnz -7 -> 0x07
+    0x48, 0x8D, 0x48, 0x01, // lea rcx, [rax+1] (size=16 in arg0)
+    0x31, 0xD2, // xor edx, edx (attributes=0 in arg1)
+    0x41, 0x89, 0xC0, // mov r8d, eax (preserve loop sum)
+    0xFF, 0x15, 0xE3, 0x05, 0x00, 0x00, // call [rip+0x5e3] -> 0x1600
+    0x85, 0xC0, // test eax, eax
+    0x0F, 0x95, 0xC1, // setnz cl
+    0x0F, 0xB6, 0xC9, // movzx ecx, cl
+    0x44, 0x01, 0xC1, // add ecx, r8d
+    0x89, 0xC8, // mov eax, ecx
+    0xC3, // ret
+];
+
+/// Build a more complex self-authored guest for M35.
+///
+/// Combines a counted loop, INC/DEC-style counter update, conditional
+/// branch, LEA address arithmetic, an HLE allocation, `TEST`/`SETcc` and
+/// `MOVZX`. The returned `RAX` must equal [`SYNTHETIC_COMPUTE_RESULT`].
+pub fn synthetic_compute_guest() -> Vec<u8> {
+    let mut bytes = synthetic_pe_calling("xmem.dll", "XMemAlloc");
+    bytes[0x400..0x400 + SYNTHETIC_COMPUTE_CODE.len()].copy_from_slice(SYNTHETIC_COMPUTE_CODE);
     bytes
 }
 

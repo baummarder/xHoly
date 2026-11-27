@@ -15,10 +15,11 @@ fn boot_state() -> WindowedGuiState {
     let boot = run_synthetic_boot(1_000).expect("synthetic guest boot");
     let steps: Vec<StepRecord> = boot
         .instructions()
-        .map(|(step, rip, kind)| StepRecord {
+        .map(|(step, rip, kind, mnemonic)| StepRecord {
             step,
             rip,
             kind: kind.clone(),
+            mnemonic: mnemonic.map(str::to_string),
         })
         .collect();
     let json = export_boot_trace_file(&boot, steps.clone()).expect("export boot trace");

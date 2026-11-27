@@ -93,7 +93,7 @@ fn guest_executes_supported_instructions_and_returns_a_documented_status() {
     assert_eq!(trace.rax, SYNTHETIC_BOOT_STATUS);
     assert_eq!(trace.steps, 6, "mov, xor, call, mov, mov, ret");
     assert_eq!(trace.report.cpu.register(reg::RSP), XMEM_HEAP_BASE);
-    let kinds: Vec<&StepKind> = trace.instructions().map(|(_, _, kind)| kind).collect();
+    let kinds: Vec<&StepKind> = trace.instructions().map(|(_, _, kind, _)| kind).collect();
     assert_eq!(kinds.len(), 6);
     assert!(kinds.iter().any(|k| matches!(k, StepKind::HleCall { .. })));
     assert!(matches!(kinds.last(), Some(StepKind::Executed)));

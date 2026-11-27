@@ -370,6 +370,10 @@ pub struct StepRecord {
     pub rip: u64,
     /// Outcome of the step.
     pub kind: StepKind,
+    /// Best-effort mnemonic from the decoder (M35). Optional so that
+    /// M34 trace files (schema 1) continue to import unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mnemonic: Option<String>,
 }
 
 impl fmt::Debug for GuestSession {
@@ -566,6 +570,8 @@ impl GuestSession {
                 break StopReason::StepsExhausted;
             }
             let rip_before = self.cpu.rip;
+            // `step` records the mnemonic of the decoded instruction.
+            // Capture it after the step so faults keep their own mnemonic.
             // The façade borrows memory and heap for one step; both
             // borrows end before dispatch borrows the runtime again.
             let outcome = {
@@ -575,6 +581,7 @@ impl GuestSession {
                 };
                 self.cpu.step(&mut space)
             };
+            let mnemonic = self.cpu.mnemonic().to_string();
             match outcome {
                 // Only retired instructions count towards the budget;
                 // a faulting instruction never retires.
@@ -584,6 +591,7 @@ impl GuestSession {
                         step: steps,
                         rip: rip_before,
                         kind: StepKind::Executed,
+                        mnemonic: Some(mnemonic),
                     });
                 }
                 StepOutcome::Halted => {
@@ -592,6 +600,7 @@ impl GuestSession {
                         step: steps,
                         rip: rip_before,
                         kind: StepKind::Halted,
+                        mnemonic: Some(mnemonic),
                     });
                     break StopReason::Halted;
                 }
@@ -603,6 +612,7 @@ impl GuestSession {
                         kind: StepKind::Fault {
                             description: description.clone(),
                         },
+                        mnemonic: Some(mnemonic),
                     });
                     self.diagnostics.push(DiagnosticEvent::CpuFault {
                         rip: fault_rip(&fault),
@@ -616,6 +626,7 @@ impl GuestSession {
                         step: steps,
                         rip: rip_before,
                         kind: StepKind::HleCall { slot_addr },
+                        mnemonic: Some(mnemonic),
                     });
                     if let Some(stop) = self.dispatch(slot_addr) {
                         break stop;
@@ -1077,13 +1088,13 @@ mod tests {
 
     #[test]
     fn unsupported_instruction_is_a_structured_fault() {
-        // lea rax, [rax] — outside the supported subset.
-        let bytes = with_entry_code(pe64::synthetic_pe(), &[0x48, 0x8D, 0x00]);
+        // int3 (0xCC) — outside the supported subset (LEA was added in M35).
+        let bytes = with_entry_code(pe64::synthetic_pe(), &[0xCC]);
         let mut session = load(&bytes);
         let report = session.run(100);
         match &report.stop {
             StopReason::Fault(CpuFault::IllegalInstruction { opcode, rip, .. }) => {
-                assert_eq!(*opcode, 0x8D);
+                assert_eq!(*opcode, 0xCC);
                 assert_eq!(*rip, session.image().entry_va);
             }
             other => panic!("expected illegal instruction, got {other:?}"),

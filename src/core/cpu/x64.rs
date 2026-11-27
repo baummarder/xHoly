@@ -402,6 +402,96 @@ fn fetch_u64<M: GuestMemory>(mem: &M, cur: &mut Cursor) -> Result<u64, Flow> {
     Ok(u64::from_le_bytes(b.try_into().unwrap()))
 }
 
+/// Best-effort mnemonic for a decoded instruction (M35 trace data).
+///
+/// Reads the following byte(s) directly from guest memory without moving
+/// the cursor. Unknown encodings yield `None`; the decoder still faults
+/// them explicitly. This is diagnostic metadata only — never used for
+/// decoding or execution decisions.
+fn mnemonic_for<M: GuestMemory>(
+    opcode: u8,
+    mem: &M,
+    cur: &Cursor,
+    _rex: u8,
+) -> Option<&'static str> {
+    // Called after the opcode (and any REX) were fetched: `cur.rip`
+    // points at the first operand byte. For 0F-prefixed instructions the
+    // next byte is the second opcode and the ModRM follows it.
+    let byte_at = |offset: u64| {
+        mem.read_bytes(cur.rip.wrapping_add(offset), 1)?
+            .into_iter()
+            .next()
+    };
+    let next = byte_at(0);
+    let modrm = next;
+    let second = if opcode == 0x0F { next } else { None };
+    let sub = |field: Option<u8>| field.map(|v| v >> 3 & 0x7);
+    let group5 = match sub(modrm) {
+        Some(0) => Some("inc"),
+        Some(1) => Some("dec"),
+        Some(2) => Some("call"),
+        _ => None,
+    };
+    let group3 = match sub(modrm) {
+        Some(0) => Some("mov"),
+        _ => None,
+    };
+    Some(match opcode {
+        0x90 => "nop",
+        0xF4 => "hlt",
+        0xC3 => "ret",
+        0x50..=0x57 => "push",
+        0x58..=0x5F => "pop",
+        0xB8..=0xBF => "mov",
+        0x89 => "mov",
+        0x8B => "mov",
+        0x8D => "lea",
+        0xC7 => group3.unwrap_or("mov"),
+        0x85 => "test",
+        0x83 | 0x81 => match sub(modrm) {
+            Some(0) => "add",
+            Some(1) => "or",
+            Some(2) => "adc",
+            Some(3) => "sbb",
+            Some(4) => "and",
+            Some(5) => "sub",
+            Some(6) => "xor",
+            Some(7) => "cmp",
+            _ => return None,
+        },
+        0x01 | 0x03 => "add",
+        0x09 | 0x0B => "or",
+        0x21 | 0x23 => "and",
+        0x29 | 0x2B => "sub",
+        0x31 | 0x33 => "xor",
+        0x39 | 0x3B => "cmp",
+        0xE8 => "call",
+        0xE9 | 0xEB => "jmp",
+        0x70..=0x7F => "jcc",
+        0x0F => match second? {
+            0x80..=0x8F => "jcc",
+            0xB6 => "movzx",
+            0xB7 => "movzx",
+            0xBE => "movsx",
+            0xBF => "movsx",
+            0x90..=0x9F => "setcc",
+            _ => return None,
+        },
+        0xFF => group5.unwrap_or("call"),
+        _ => return None,
+    })
+}
+
+/// Mask for a 1-, 2-, 4- or 8-byte operand.
+fn size_mask(width: u8) -> u64 {
+    match width {
+        1 => u8::MAX as u64,
+        2 => u16::MAX as u64,
+        4 => u32::MAX as u64,
+        _ => u64::MAX,
+    }
+}
+
 fn illegal(rip: u64, opcode: u8, reason: &str) -> Flow {
     Flow::Fault(CpuFault::IllegalInstruction {
         rip,
@@ -427,6 +517,9 @@ pub struct X64Cpu {
     hle_slots: BTreeSet<u64>,
     /// Optional stack bounds `[bottom, top)` enforced on push/pop/call/ret.
     stack_bounds: Option<StackBounds>,
+    /// Mnemonic of the most recently decoded instruction (M35 trace data).
+    /// A `&'static str` chosen by the decoder; no guest bytes are stored.
+    last_mnemonic: &'static str,
 }
 
 impl Default for X64Cpu {
@@ -446,6 +539,7 @@ impl X64Cpu {
             instructions: 0,
             hle_slots: BTreeSet::new(),
             stack_bounds: None,
+            last_mnemonic: "?",
         }
     }
 
@@ -499,6 +593,11 @@ impl X64Cpu {
     pub fn finish_hle_call<M: GuestMemory>(&mut self, mem: &M) -> Result<u64, CpuFault> {
         let rip = self.rip;
         self.pop(mem, rip)
+    }
+
+    /// Mnemonic of the most recently decoded instruction.
+    pub fn mnemonic(&self) -> &'static str {
+        self.last_mnemonic
     }
 
     /// Immutable view of the CPU state.
@@ -573,6 +672,9 @@ impl X64Cpu {
             u32::MAX as u64
         };
 
+        // Record the mnemonic before decoding operands so a later fault is
+        // still attributed to the right instruction in the M35 trace.
+        self.last_mnemonic = mnemonic_for(opcode, mem, cur, rex).unwrap_or("?");
         match opcode {
             // NOP
             0x90 => Flow::Next,
@@ -642,6 +744,25 @@ impl X64Cpu {
                     Err(fault) => return Flow::Fault(fault),
                 };
                 self.regs[reg_field as usize] = value & mask;
+                Flow::Next
+            }
+            // LEA r, m — address calculation without a memory access.
+            // No flags are affected; RIP-relative operands resolve against
+            // the end of the instruction (after any displacement bytes).
+            0x8D => {
+                let (reg_field, target) = match self.decode_target(mem, cur, rex) {
+                    Ok(v) => v,
+                    Err(flow) => return flow,
+                };
+                let addr = match target.addr(cur.rip) {
+                    Some(a) => a,
+                    None => return illegal(start, opcode, "unresolvable LEA address"),
+                };
+                self.regs[reg_field as usize] = if width == 8 {
+                    addr
+                } else {
+                    addr & u32::MAX as u64
+                };
                 Flow::Next
             }
             // MOV r/m, imm32 (group 3, /0 only; sign-extended to 64 bits)
@@ -816,17 +937,94 @@ impl X64Cpu {
                             Some(false) => Flow::Next,
                         }
                     }
+                    // MOVZX r/m8|r/m16 → r  (no flags).
+                    0xB6 | 0xB7 => {
+                        let (reg_field, target) = match self.decode_target(mem, cur, rex) {
+                            Ok(v) => v,
+                            Err(flow) => return flow,
+                        };
+                        let source_width = if second == 0xB6 { 1 } else { 2 };
+                        let value = match self.read_sized(mem, target, cur.rip, start, source_width)
+                        {
+                            Ok(v) => v,
+                            Err(fault) => return Flow::Fault(fault),
+                        };
+                        self.regs[reg_field as usize] = value;
+                        Flow::Next
+                    }
+                    // MOVSX r/m8|r/m16 → r  (no flags).
+                    0xBE | 0xBF => {
+                        let (reg_field, target) = match self.decode_target(mem, cur, rex) {
+                            Ok(v) => v,
+                            Err(flow) => return flow,
+                        };
+                        let source_width = if second == 0xBE { 1 } else { 2 };
+                        let raw = match self.read_sized(mem, target, cur.rip, start, source_width) {
+                            Ok(v) => v,
+                            Err(fault) => return Flow::Fault(fault),
+                        };
+                        let value = if source_width == 1 {
+                            raw as i8 as i64 as u64
+                        } else {
+                            raw as i16 as i64 as u64
+                        };
+                        // A 32-bit destination truncates (and thereby zero-extends).
+                        self.regs[reg_field as usize] = if width == 8 {
+                            value
+                        } else {
+                            value & u32::MAX as u64
+                        };
+                        Flow::Next
+                    }
+                    // SETcc r/m8 — only the low byte changes; no flags.
+                    0x90..=0x9F => {
+                        let (_, target) = match self.decode_target(mem, cur, rex) {
+                            Ok(v) => v,
+                            Err(flow) => return flow,
+                        };
+                        let value = match self.condition(second - 0x90) {
+                            None => return illegal(start, second, "parity flag is not modelled"),
+                            Some(true) => 1,
+                            Some(false) => 0,
+                        };
+                        match self.write_sized(mem, target, cur.rip, start, 1, value) {
+                            Ok(()) => Flow::Next,
+                            Err(fault) => Flow::Fault(fault),
+                        }
+                    }
                     _ => illegal(start, second, "unsupported two-byte opcode"),
                 }
             }
-            // Group 5: only /2 CALL r/m64 is implemented.
+            // Group 5: INC /0, DEC /1, CALL /2.
             0xFF => {
                 let (reg_field, target) = match self.decode_target(mem, cur, rex) {
                     Ok(v) => v,
                     Err(flow) => return flow,
                 };
+                if reg_field == 0 || reg_field == 1 {
+                    // INC/DEC never modify CF, so preserve it around `alu`.
+                    let cf = self.rflags & FLAG_CF;
+                    let old = match self.read_target(mem, target, cur.rip, start, width) {
+                        Ok(v) => v,
+                        Err(fault) => return Flow::Fault(fault),
+                    };
+                    let index = if reg_field == 0 { 0 } else { 5 };
+                    let result = match self.alu(index, old, 1, width) {
+                        Some(v) => v,
+                        None => return illegal(start, opcode, "unsupported INC/DEC encoding"),
+                    };
+                    self.rflags = (self.rflags & !FLAG_CF) | cf;
+                    return match self.write_target(mem, target, cur.rip, start, width, result) {
+                        Ok(()) => Flow::Next,
+                        Err(fault) => Flow::Fault(fault),
+                    };
+                }
                 if reg_field != 2 {
-                    return illegal(start, opcode, "group 5: only /2 CALL is implemented");
+                    return illegal(
+                        start,
+                        opcode,
+                        "group 5: only /0 INC, /1 DEC and /2 CALL are implemented",
+                    );
                 }
                 match target {
                     Target::Reg(index) => {
@@ -946,6 +1144,77 @@ impl X64Cpu {
                 rip_rel,
             },
         ))
+    }
+
+    /// Read 1, 2, 4 or 8 bytes from a register or memory operand.
+    ///
+    /// Narrow register reads take the low byte/word; memory reads go
+    /// through the guest façade with a validated width.
+    fn read_sized<M: GuestMemory>(
+        &self,
+        mem: &M,
+        target: Target,
+        next_rip: u64,
+        rip: u64,
+        width: u8,
+    ) -> Result<u64, CpuFault> {
+        match target {
+            Target::Reg(index) => Ok(self.regs[index] & size_mask(width)),
+            Target::Mem { .. } => {
+                let addr = target.addr(next_rip).ok_or(CpuFault::IllegalInstruction {
+                    rip,
+                    opcode: 0,
+                    reason: "unresolvable memory operand".into(),
+                })?;
+                let bytes = mem
+                    .read_bytes(addr, width as usize)
+                    .ok_or(CpuFault::Memory {
+                        addr,
+                        write: false,
+                        rip,
+                    })?;
+                Ok(u64::from_le_bytes(
+                    bytes[..width as usize].try_into().unwrap(),
+                ))
+            }
+        }
+    }
+
+    /// Write 1, 2, 4 or 8 bytes to a register or memory operand.
+    ///
+    /// Narrow register writes preserve the upper bits (x86 semantics);
+    /// the existing `write_target` keeps its 32-bit zero-extension rule.
+    fn write_sized<M: GuestMemory>(
+        &mut self,
+        mem: &mut M,
+        target: Target,
+        next_rip: u64,
+        rip: u64,
+        width: u8,
+        value: u64,
+    ) -> Result<(), CpuFault> {
+        match target {
+            Target::Reg(index) => {
+                let mask = size_mask(width);
+                self.regs[index] = (self.regs[index] & !mask) | (value & mask);
+                Ok(())
+            }
+            Target::Mem { .. } => {
+                let addr = target.addr(next_rip).ok_or(CpuFault::IllegalInstruction {
+                    rip,
+                    opcode: 0,
+                    reason: "unresolvable memory operand".into(),
+                })?;
+                if !mem.write_bytes(addr, &value.to_le_bytes()[..width as usize]) {
+                    return Err(CpuFault::Memory {
+                        addr,
+                        write: true,
+                        rip,
+                    });
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Read an operand (register or memory) as `width` bytes.
@@ -1475,11 +1744,11 @@ mod tests {
 
     #[test]
     fn unsupported_encodings_fault_explicitly() {
-        // LEA (0x8D) is not in the subset.
-        let (mut cpu, mut mem) = machine(&[0x48, 0x8D, 0x00]);
+        // INT3 (0xCC) is not in the subset (LEA was added in M35).
+        let (mut cpu, mut mem) = machine(&[0xCC]);
         match cpu.step(&mut mem) {
             StepOutcome::Fault(CpuFault::IllegalInstruction { opcode, .. }) => {
-                assert_eq!(opcode, 0x8D);
+                assert_eq!(opcode, 0xCC);
             }
             other => panic!("expected illegal instruction, got {other:?}"),
         }

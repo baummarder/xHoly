@@ -138,14 +138,15 @@ fn distinguishes_unsupported_unknown_and_failed_imports() {
 
 #[test]
 fn reports_cpu_and_memory_faults_without_retiring_faulting_instruction() {
-    // Illegal instruction: LEA RAX, [RAX] (0x48 0x8D 0x00)
-    let illegal = with_entry_code(pe64::synthetic_pe(), &[0x48, 0x8D, 0x00]);
+    // Illegal instruction: INT3 (0xCC), outside the subset. LEA was added
+    // in M35 and is no longer an unsupported example.
+    let illegal = with_entry_code(pe64::synthetic_pe(), &[0xCC]);
     let mut session =
         GuestSession::load("illegal.exe", &illegal, HleRuntime::with_foundation()).unwrap();
     let report = session.run(100);
     assert!(matches!(
         report.stop,
-        StopReason::Fault(CpuFault::IllegalInstruction { opcode: 0x8D, .. })
+        StopReason::Fault(CpuFault::IllegalInstruction { opcode: 0xCC, .. })
     ));
     assert_eq!(report.steps, 0);
     assert!(report

@@ -21,7 +21,12 @@ use crate::core::pipeline::{ExecutionReport, GuestSession, StepRecord};
 /// Magic format tag of an xHoly trace file.
 pub const TRACE_FORMAT: &str = "xholy-trace";
 /// Current schema version of the trace file format.
-pub const TRACE_SCHEMA_VERSION: u32 = 1;
+///
+/// M35 adds the optional `mnemonic` field to step records. Files written
+/// with schema 1 remain importable; new exports use schema 2.
+pub const TRACE_SCHEMA_VERSION: u32 = 2;
+/// Oldest schema version this build can still import (M34 files).
+pub const TRACE_MIN_SCHEMA_VERSION: u32 = 1;
 /// Maximum accepted size of an imported trace file (64 MiB).
 ///
 /// Bounds parsing work for untrusted input. A normal synthetic guest trace
@@ -163,7 +168,7 @@ impl TraceFile {
         if self.format != TRACE_FORMAT {
             return Err(TraceImportError::NotATrace);
         }
-        if self.schema_version != TRACE_SCHEMA_VERSION {
+        if !(TRACE_MIN_SCHEMA_VERSION..=TRACE_SCHEMA_VERSION).contains(&self.schema_version) {
             return Err(TraceImportError::UnsupportedVersion(self.schema_version));
         }
         // `steps` must be a stable prefix: step numbers start at 1 and
@@ -568,10 +573,11 @@ mod tests {
         let boot = sample_boot();
         let steps = boot
             .instructions()
-            .map(|(step, rip, kind)| StepRecord {
+            .map(|(step, rip, kind, mnemonic)| StepRecord {
                 step,
                 rip,
                 kind: kind.clone(),
+                mnemonic: mnemonic.map(str::to_string),
             })
             .collect();
         let json = export_boot_trace_file(&boot, steps).expect("export");
@@ -609,6 +615,17 @@ mod tests {
     }
 
     #[test]
+    fn m34_schema_one_files_still_import() {
+        let report = sample_report();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&export_trace_file(&report, Vec::new()).unwrap()).unwrap();
+        value["schema_version"] = serde_json::json!(1);
+        let file = import_trace_file(&value.to_string()).expect("M34 file imports");
+        assert_eq!(file.schema_version, 1);
+        assert_eq!(file.report, report);
+    }
+
+    #[test]
     fn import_rejects_unsupported_version_and_missing_fields() {
         let report = sample_report();
         let mut value: serde_json::Value =
@@ -636,6 +653,7 @@ mod tests {
             step: 7,
             rip: 0,
             kind: StepKind::Executed,
+            mnemonic: None,
         }];
         let text = export_trace_file(&report, steps).unwrap();
         assert!(matches!(
@@ -699,6 +717,7 @@ mod tests {
                 step: i + 1,
                 rip: 0x2000_0000_0000 + i,
                 kind: StepKind::Executed,
+                mnemonic: Some("nop".into()),
             })
             .collect();
         let json = export_trace_file(&report, steps.clone()).unwrap();

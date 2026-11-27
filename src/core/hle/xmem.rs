@@ -131,6 +131,25 @@ pub struct HeapStats {
     pub resident_bytes: u64,
 }
 
+/// Guest-visible metadata for one live allocation (M35 diagnostics).
+///
+/// Derived from the existing allocation records: guest base and size,
+/// alignment, the raw attribute word (never decoded) and protection.
+/// No host backing address is ever returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllocationInfo {
+    /// Guest VA of the allocation base.
+    pub base: u64,
+    /// Size in bytes.
+    pub size: u64,
+    /// Alignment used for the allocation.
+    pub alignment: u64,
+    /// Raw XMem attribute word, recorded verbatim.
+    pub attributes: u64,
+    /// Current protection metadata.
+    pub protection: Protection,
+}
+
 /// A bump-allocated guest heap with per-allocation host backing buffers.
 #[derive(Debug)]
 pub struct GuestHeap {
@@ -251,6 +270,27 @@ impl GuestHeap {
     /// Look up the allocation registered at exactly `addr`.
     pub fn allocation_at(&self, addr: u64) -> Option<&Allocation> {
         self.allocations.get(&addr)
+    }
+
+    /// Query metadata for the live allocation containing `addr`.
+    ///
+    /// Any address inside the allocation resolves to its base. Unknown or
+    /// freed addresses fail with `InvalidAddress` rather than returning a
+    /// fabricated record.
+    pub fn query(&self, addr: u64) -> Result<AllocationInfo, HeapError> {
+        let (base, alloc) = self
+            .entry_containing(addr)
+            .ok_or(HeapError::InvalidAddress)?;
+        if alloc.state != AllocationState::Active {
+            return Err(HeapError::InvalidAddress);
+        }
+        Ok(AllocationInfo {
+            base,
+            size: alloc.size,
+            alignment: alloc.alignment,
+            attributes: alloc.attributes,
+            protection: alloc.protection,
+        })
     }
 
     /// Check that `[addr, addr + len)` lies inside one live allocation.
