@@ -21,7 +21,7 @@
 //! ([`crate::core::loader::pe64::synthetic_boot_guest`]); no proprietary
 //! SDK content, no retail binary and no host pointer is involved.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::cpu::x64::reg;
 use crate::core::hle::runtime::{DispatchStatus, HleRuntime};
@@ -34,7 +34,7 @@ use crate::core::pipeline::{GuestSession, LoadError, StepKind, StopReason};
 ///
 /// Distinguishes successful, incomplete and failed executions — never a
 /// compatibility claim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BootStatus {
     /// Guest returned with the documented synthetic status and marker.
     Success,
@@ -56,7 +56,7 @@ impl BootStatus {
 }
 
 /// One phase of a synthetic guest boot (M33 trace events).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BootEvent {
     /// Boot started; loading is about to begin.
     LoadStarted {
@@ -246,7 +246,7 @@ impl BootEvent {
 }
 
 /// Full ordered trace of one synthetic guest boot (Serialize only).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BootTrace {
     /// Diagnostic guest name.
     pub guest: String,

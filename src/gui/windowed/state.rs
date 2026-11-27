@@ -1,8 +1,9 @@
 //! Windowed GUI state — Phase 5.
 
 use crate::core::execution::GuestFrame;
+use crate::core::pipeline::boot::BootTrace;
 use crate::core::pipeline::trace::TraceEventFilter;
-use crate::core::pipeline::ExecutionReport;
+use crate::core::pipeline::{ExecutionReport, StepRecord};
 use crate::gui::scarletx::BootProgress;
 use crate::gui::{GameListItem, GuiTheme};
 use std::time::SystemTime;
@@ -135,16 +136,19 @@ pub enum TracePanel {
     HleCalls,
     /// CPU/ABI faults & stop reason inspection.
     Faults,
+    /// M33 boot phases, instruction steps and final verdict.
+    Boot,
 }
 
 impl TracePanel {
     /// All trace panels in UI order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Timeline,
         Self::Registers,
         Self::Imports,
         Self::HleCalls,
         Self::Faults,
+        Self::Boot,
     ];
 
     /// Tab label.
@@ -155,6 +159,7 @@ impl TracePanel {
             Self::Imports => "IMPORTS",
             Self::HleCalls => "HLE CALLS",
             Self::Faults => "FAULTS",
+            Self::Boot => "BOOT",
         }
     }
 
@@ -166,6 +171,7 @@ impl TracePanel {
             "IMPORTS" => Some(Self::Imports),
             "HLE CALLS" => Some(Self::HleCalls),
             "FAULTS" => Some(Self::Faults),
+            "BOOT" => Some(Self::Boot),
             _ => None,
         }
     }
@@ -244,6 +250,14 @@ pub struct WindowedGuiState {
     pub trace_selected: usize,
     /// Loaded execution report for the HLE Trace Viewer.
     pub trace_report: Option<ExecutionReport>,
+    /// Boot phases and final verdict, when the report came from a boot.
+    pub boot_trace: Option<BootTrace>,
+    /// Per-instruction records of the most recent run.
+    pub trace_steps: Vec<StepRecord>,
+    /// Source file of the loaded trace (display only, never executed).
+    pub trace_path: Option<String>,
+    /// Result of the last Open/Save/Refresh action (diagnostics only).
+    pub trace_status: Option<String>,
 }
 
 impl Default for WindowedGuiState {
@@ -283,6 +297,10 @@ impl Default for WindowedGuiState {
             trace_filter: TraceEventFilter::All,
             trace_selected: 0,
             trace_report: None,
+            boot_trace: None,
+            trace_steps: Vec::new(),
+            trace_path: None,
+            trace_status: None,
         }
     }
 }
@@ -327,7 +345,48 @@ impl WindowedGuiState {
     /// Attach an [`ExecutionReport`] to the HLE Trace Viewer and switch to it.
     pub fn set_trace_report(&mut self, report: ExecutionReport) {
         self.trace_report = Some(report);
+        self.boot_trace = None;
+        self.trace_steps.clear();
+        self.trace_path = None;
         self.diagnostics_tab = DiagnosticsTab::HleTrace;
         self.trace_selected = 0;
+    }
+
+    /// Attach a [`BootTrace`] with its instruction records to the viewer.
+    pub fn set_boot_trace(&mut self, boot: BootTrace, steps: Vec<StepRecord>) {
+        self.trace_steps = steps;
+        self.set_trace_report(boot.report.clone());
+        self.boot_trace = Some(boot);
+    }
+
+    /// Remove the current trace without touching the rest of the GUI state.
+    pub fn clear_trace(&mut self) {
+        self.trace_report = None;
+        self.boot_trace = None;
+        self.trace_steps.clear();
+        self.trace_path = None;
+        self.trace_status = Some("trace cleared".into());
+        self.trace_selected = 0;
+    }
+
+    /// Record the outcome of a trace file action in the viewer status line.
+    pub fn set_trace_status(&mut self, status: impl Into<String>) {
+        self.trace_status = Some(status.into());
+    }
+
+    /// Attach a validated trace file to the viewer.
+    pub fn load_trace_file(
+        &mut self,
+        file: crate::core::pipeline::trace::TraceFile,
+        path: Option<String>,
+    ) {
+        let steps = file.steps.clone();
+        let report = file.report.clone();
+        match file.into_boot() {
+            Some(boot) => self.set_boot_trace(boot, steps.clone()),
+            None => self.set_trace_report(report),
+        }
+        self.trace_steps = steps;
+        self.trace_path = path;
     }
 }

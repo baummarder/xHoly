@@ -174,6 +174,9 @@ pub struct GuiConfig {
     pub postfx: PostFxConfig,
     /// Shared presence sink supplied by the host app. `None` = no-op.
     pub presence: Option<std::sync::Arc<dyn crate::presence::PresenceSink>>,
+    /// Optional `.xholy-trace.json` file to load into the HLE Trace Viewer
+    /// at startup (CLI `--gui-trace PATH`). Never executed, only parsed.
+    pub trace_file: Option<std::path::PathBuf>,
 }
 
 impl Default for GuiConfig {
@@ -196,6 +199,7 @@ impl Default for GuiConfig {
             preferred_api: GpuApiPreference::Auto,
             postfx: PostFxConfig::default(),
             presence: None,
+            trace_file: None,
         }
     }
 }

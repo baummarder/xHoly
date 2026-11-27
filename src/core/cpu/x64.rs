@@ -62,7 +62,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use crate::core::memory::GuestMemory;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Number of general-purpose registers (RAX..R15).
 pub const REGISTER_COUNT: usize = 16;
@@ -132,10 +132,10 @@ pub fn register_name(index: usize) -> &'static str {
 
 /// A CPU fault raised while stepping guest code.
 ///
-/// `Serialize` only (no `Deserialize`): fault reasons are `&'static
-/// str` chosen by the decoder, so reports are written for a trace
-/// viewer but never parsed back into this type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// Deserializable since M34 so exported traces can be imported into the
+/// GUI. Fault reasons are owned `String`s (the decoder's static messages
+/// are copied), so no host pointer or borrowed data is ever in a trace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CpuFault {
     /// Instruction fetch left mapped guest memory.
     FetchOutOfBounds {
@@ -149,7 +149,7 @@ pub enum CpuFault {
         /// Primary opcode byte.
         opcode: u8,
         /// Why the encoding was rejected.
-        reason: &'static str,
+        reason: String,
     },
     /// A data access was refused by guest memory.
     Memory {
@@ -275,7 +275,7 @@ impl fmt::Display for CpuFault {
 impl std::error::Error for CpuFault {}
 
 /// Immutable view of the CPU state (diagnostics and reports).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuSnapshot {
     /// Instruction pointer.
     pub rip: u64,
@@ -402,11 +402,11 @@ fn fetch_u64<M: GuestMemory>(mem: &M, cur: &mut Cursor) -> Result<u64, Flow> {
     Ok(u64::from_le_bytes(b.try_into().unwrap()))
 }
 
-fn illegal(rip: u64, opcode: u8, reason: &'static str) -> Flow {
+fn illegal(rip: u64, opcode: u8, reason: &str) -> Flow {
     Flow::Fault(CpuFault::IllegalInstruction {
         rip,
         opcode,
-        reason,
+        reason: reason.to_string(),
     })
 }
 
@@ -963,7 +963,7 @@ impl X64Cpu {
                 let addr = target.addr(next_rip).ok_or(CpuFault::IllegalInstruction {
                     rip,
                     opcode: 0,
-                    reason: "unresolvable memory operand",
+                    reason: "unresolvable memory operand".into(),
                 })?;
                 let bytes = mem
                     .read_bytes(addr, width as usize)
@@ -1005,7 +1005,7 @@ impl X64Cpu {
                 let addr = target.addr(next_rip).ok_or(CpuFault::IllegalInstruction {
                     rip,
                     opcode: 0,
-                    reason: "unresolvable memory operand",
+                    reason: "unresolvable memory operand".into(),
                 })?;
                 let bytes = value.to_le_bytes();
                 let len = width as usize;

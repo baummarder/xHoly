@@ -162,7 +162,7 @@ fn hle_trace_viewer_renders_empty_state_and_all_panels() {
     assert_eq!(fb.len(), 1280 * 720 * 4);
     assert_eq!(layout.diag_tabs.len(), 2);
 
-    // Populated trace across all 5 panels.
+    // Populated trace across all 6 panels (BOOT added in M34).
     let bytes = pe64::synthetic_pe_calling("xmem.dll", "XMemAlloc");
     let mut session =
         GuestSession::load("trace_gui.exe", &bytes, HleRuntime::with_foundation()).unwrap();
@@ -179,7 +179,7 @@ fn hle_trace_viewer_renders_empty_state_and_all_panels() {
         state.trace_panel = panel;
         let (fb, layout) = ui::composite(&state, 1280, 720);
         assert_eq!(fb.len(), 1280 * 720 * 4);
-        assert_eq!(layout.trace_panels.len(), 5);
+        assert_eq!(layout.trace_panels.len(), TracePanel::ALL.len());
         if panel == TracePanel::Timeline {
             assert_eq!(layout.trace_filters.len(), 6);
             assert!(!layout.trace_events.is_empty());

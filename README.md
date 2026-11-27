@@ -163,6 +163,12 @@ development host):
   covers load, memory, stack, entry point, CPU steps, HLE invocation and
   return, guest exit and final result; it distinguishes success,
   incomplete and failed boots. See [docs/milestone-33.md](docs/milestone-33.md).
+- **GUI trace integration (M34)** — execution reports and M33 boot traces
+  can be exported to and imported from a versioned `.xholy-trace.json`
+  file. The HLE Trace Viewer shows boot phases, instruction records, HLE
+  calls and the SUCCESS/INCOMPLETE/FAILED verdict; Open, Save, Refresh
+  and Clear controls perform real file actions. See
+  [docs/milestone-34.md](docs/milestone-34.md).
 - **Import analysis** — `--analyze` produces a read-only compatibility
   report classifying every import as implemented / partially
   implemented / unsupported / unknown, with evidence strings.
@@ -305,6 +311,7 @@ See `cpp/window_manager/README.md` and `INSTALL.md` for details.
 | `--analyze PATH --json` | Machine-readable analysis report |
 | `--trace PATH [--trace-out FILE] [--json]` | Execute a PE32+ file in the bounded HLE pipeline and export its diagnostic trace |
 | `--guest-test [--json] [--max-steps N]` | Run the self-contained synthetic M33 guest boot (load → HLE → exit) and print its ordered boot trace; defaults to 10,000 steps |
+| `--gui-trace PATH` | Load a `.xholy-trace.json` into the GUI trace viewer (works with `--gui`, `--gui-headless`, `--gui-tui`) |
 | `--progress` | Print the roadmap progress report derived from `progress.json` |
 | `--gpu-api auto\|vulkan\|opengl\|software` | Force the host GPU API (alias: `--renderer`) |
 | `--resolution WxH` | Window size |
@@ -349,7 +356,7 @@ report on the command line.
 | Game Compatibility & Boot | 15% | 60.0% |
 | GUI & Infrastructure | 5% | 100.0% |
 
-Last verification: 2026-11-27.
+Last verification: 2026-11-28.
 
 Calculation: each task adds `weight x credit` to its category, where credit is 0 for Planned and Blocked, 0.5 for Partially Implemented, and 1 for Implemented and Verified. Task weights total 100 within each category, so the category sum is its completion percentage. Overall completion is the category completion weighted by the category weights. Everything is derived from `progress.json` by `src/progress.rs`. This measures roadmap progress only, not game compatibility, production readiness or retail boot success.
 

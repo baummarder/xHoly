@@ -10,7 +10,7 @@
 
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::cpu::x64::{reg, X64Cpu, ARG_REGISTERS};
 use crate::core::memory::GuestMemory;
@@ -54,7 +54,7 @@ impl Default for CallingConvention {
 }
 
 /// Structured ABI failure raised during HLE argument extraction.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AbiFault {
     /// The configured calling convention is not supported.
     UnsupportedConvention {

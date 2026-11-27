@@ -1,14 +1,257 @@
-//! HLE Trace Viewer data model, filtering, and export helpers — Milestone 31.
+//! HLE Trace Viewer data model, filtering, and import/export — M31 + M34.
 //!
 //! Pure data and serialization layer built directly on [`ExecutionReport`] and
 //! [`DiagnosticEvent`]. Completely independent of any GUI implementation.
+//!
+//! M34 adds a documented, versioned file format (`.xholy-trace.json`) so a
+//! report can be exported, re-imported and inspected in the GUI. Imported
+//! data is treated as untrusted: format name and schema version are checked
+//! before any value is used.
 
 use std::path::Path;
 
+use serde::{Deserialize, Serialize};
+
 use crate::core::hle::runtime::HleRuntime;
 use crate::core::hle::ImplementationState;
+use crate::core::pipeline::boot::{BootStatus, BootTrace};
 use crate::core::pipeline::diagnostics::DiagnosticEvent;
-use crate::core::pipeline::{ExecutionReport, GuestSession};
+use crate::core::pipeline::{ExecutionReport, GuestSession, StepRecord};
+
+/// Magic format tag of an xHoly trace file.
+pub const TRACE_FORMAT: &str = "xholy-trace";
+/// Current schema version of the trace file format.
+pub const TRACE_SCHEMA_VERSION: u32 = 1;
+/// Maximum accepted size of an imported trace file (64 MiB).
+///
+/// Bounds parsing work for untrusted input. A normal synthetic guest trace
+/// is a few kilobytes; 64 MiB leaves ample room for long bounded runs.
+pub const MAX_TRACE_FILE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Kind of execution stored in a trace file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TraceKind {
+    /// Plain execution report (`--trace`).
+    Execution,
+    /// Synthetic guest boot with phases and final verdict (`--guest-test`).
+    Boot,
+}
+
+/// Boot-specific payload of a versioned trace file.
+///
+/// The `ExecutionReport` itself is stored once in [`TraceFile::report`]; this
+/// struct contains only the boot-specific fields of [`BootTrace`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceBootData {
+    /// Diagnostic guest name.
+    pub guest: String,
+    /// SUCCESS / INCOMPLETE / FAILED verdict.
+    pub status: BootStatus,
+    /// Retired guest instructions.
+    pub steps: u64,
+    /// Guest `RAX` at exit.
+    pub rax: u64,
+    /// Whether the guest's heap marker was observed.
+    pub marker_verified: bool,
+    /// Human-readable stop reason.
+    pub stop: String,
+    /// Ordered boot phases.
+    pub events: Vec<crate::core::pipeline::boot::BootEvent>,
+}
+
+/// Versioned, self-contained trace file (`.xholy-trace.json`).
+///
+/// `format` and `schema_version` are validated on import, so unrelated JSON
+/// files can never be mistaken for a trace. No host pointers, secrets or
+/// machine-specific data are stored — all addresses are guest VAs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TraceFile {
+    /// Must equal [`TRACE_FORMAT`].
+    pub format: String,
+    /// Must equal [`TRACE_SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// What kind of execution the file contains.
+    pub kind: TraceKind,
+    /// The execution report (always present).
+    pub report: ExecutionReport,
+    /// Boot phases and verdict, present for [`TraceKind::Boot`].
+    pub boot: Option<TraceBootData>,
+    /// Per-instruction records of the most recent run.
+    pub steps: Vec<StepRecord>,
+}
+
+/// Why a trace file could not be imported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceImportError {
+    /// Input is not valid UTF-8 JSON.
+    InvalidJson(String),
+    /// File is larger than [`MAX_TRACE_FILE_BYTES`].
+    TooLarge(usize),
+    /// File does not carry the xHoly trace format tag.
+    NotATrace,
+    /// File uses a schema version this build cannot read.
+    UnsupportedVersion(u32),
+    /// A required field is missing, malformed or inconsistent.
+    Malformed(String),
+}
+
+impl std::fmt::Display for TraceImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidJson(e) => write!(f, "invalid trace JSON: {e}"),
+            Self::TooLarge(size) => write!(f, "trace file of {size} bytes exceeds the limit"),
+            Self::NotATrace => f.write_str("not an xHoly trace file"),
+            Self::UnsupportedVersion(v) => write!(f, "unsupported trace schema version {v}"),
+            Self::Malformed(msg) => write!(f, "malformed trace file: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for TraceImportError {}
+
+impl TraceFile {
+    /// Wrap an execution report in a versioned trace file.
+    pub fn from_report(report: &ExecutionReport, steps: Vec<StepRecord>) -> Self {
+        Self {
+            format: TRACE_FORMAT.into(),
+            schema_version: TRACE_SCHEMA_VERSION,
+            kind: TraceKind::Execution,
+            report: report.clone(),
+            boot: None,
+            steps,
+        }
+    }
+
+    /// Wrap a boot trace (including its report) in a versioned trace file.
+    pub fn from_boot(boot: &BootTrace, steps: Vec<StepRecord>) -> Self {
+        Self {
+            format: TRACE_FORMAT.into(),
+            schema_version: TRACE_SCHEMA_VERSION,
+            kind: TraceKind::Boot,
+            report: boot.report.clone(),
+            boot: Some(TraceBootData {
+                guest: boot.guest.clone(),
+                status: boot.status,
+                steps: boot.steps,
+                rax: boot.rax,
+                marker_verified: boot.marker_verified,
+                stop: boot.stop.clone(),
+                events: boot.events.clone(),
+            }),
+            steps,
+        }
+    }
+
+    /// Serialise to pretty JSON.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Validate and deserialise a trace file.
+    pub fn from_json(text: &str) -> Result<Self, TraceImportError> {
+        if text.len() > MAX_TRACE_FILE_BYTES {
+            return Err(TraceImportError::TooLarge(text.len()));
+        }
+        let file: Self =
+            serde_json::from_str(text).map_err(|e| TraceImportError::InvalidJson(e.to_string()))?;
+        file.validate()?;
+        Ok(file)
+    }
+
+    /// Validate imported data before any of it reaches the GUI.
+    pub fn validate(&self) -> Result<(), TraceImportError> {
+        if self.format != TRACE_FORMAT {
+            return Err(TraceImportError::NotATrace);
+        }
+        if self.schema_version != TRACE_SCHEMA_VERSION {
+            return Err(TraceImportError::UnsupportedVersion(self.schema_version));
+        }
+        // `steps` must be a stable prefix: step numbers start at 1 and
+        // increase by one, no matter where the trace came from.
+        for (index, record) in self.steps.iter().enumerate() {
+            if record.step != index as u64 + 1 {
+                return Err(TraceImportError::Malformed(format!(
+                    "step record {} has number {}",
+                    index, record.step
+                )));
+            }
+        }
+        if self.steps.len() as u64 > self.report.steps {
+            return Err(TraceImportError::Malformed(
+                "more step records than retired instructions".into(),
+            ));
+        }
+        if let Some(boot) = &self.boot {
+            if self.kind != TraceKind::Boot {
+                return Err(TraceImportError::Malformed(
+                    "boot payload in a non-boot trace".into(),
+                ));
+            }
+            if boot.steps != self.report.steps || boot.stop != self.report.stop.to_string() {
+                return Err(TraceImportError::Malformed(
+                    "boot result disagrees with the execution report".into(),
+                ));
+            }
+            if boot.rax != self.report.cpu.register(crate::core::cpu::x64::reg::RAX) {
+                return Err(TraceImportError::Malformed(
+                    "boot RAX disagrees with the CPU snapshot".into(),
+                ));
+            }
+            if !boot.events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::core::pipeline::boot::BootEvent::FinalResult { .. }
+                )
+            }) {
+                return Err(TraceImportError::Malformed(
+                    "boot trace has no final result".into(),
+                ));
+            }
+        } else if self.kind == TraceKind::Boot {
+            return Err(TraceImportError::Malformed(
+                "boot trace has no boot payload".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reconstruct a [`BootTrace`] if this file contains one.
+    pub fn into_boot(self) -> Option<BootTrace> {
+        let boot = self.boot?;
+        Some(BootTrace {
+            guest: boot.guest,
+            status: boot.status,
+            steps: boot.steps,
+            rax: boot.rax,
+            marker_verified: boot.marker_verified,
+            stop: boot.stop,
+            events: boot.events,
+            report: self.report,
+        })
+    }
+}
+
+/// Export an execution report to a versioned `.xholy-trace.json` document.
+pub fn export_trace_file(
+    report: &ExecutionReport,
+    steps: Vec<StepRecord>,
+) -> Result<String, String> {
+    TraceFile::from_report(report, steps)
+        .to_json()
+        .map_err(|e| format!("cannot serialise trace: {e}"))
+}
+
+/// Import a versioned `.xholy-trace.json` document.
+pub fn import_trace_file(text: &str) -> Result<TraceFile, TraceImportError> {
+    TraceFile::from_json(text)
+}
+
+/// Export a synthetic boot trace to a versioned `.xholy-trace.json` document.
+pub fn export_boot_trace_file(boot: &BootTrace, steps: Vec<StepRecord>) -> Result<String, String> {
+    TraceFile::from_boot(boot, steps)
+        .to_json()
+        .map_err(|e| format!("cannot serialise boot trace: {e}"))
+}
 
 /// Event-type filter for the HLE Trace Viewer timeline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -294,12 +537,174 @@ pub fn run_pe_file_trace(path: &Path, max_steps: u64) -> Result<ExecutionReport,
 mod tests {
     use super::*;
     use crate::core::loader::pe64;
+    use crate::core::pipeline::{StepKind, StepRecord};
 
     fn sample_report() -> ExecutionReport {
         let bytes = pe64::synthetic_pe_calling("xmem.dll", "XMemAlloc");
         let mut session =
             GuestSession::load("sample.exe", &bytes, HleRuntime::with_foundation()).unwrap();
         session.run(1_000)
+    }
+
+    fn sample_boot() -> BootTrace {
+        crate::core::pipeline::boot::run_synthetic_boot(1_000).unwrap()
+    }
+
+    #[test]
+    fn execution_report_json_round_trips_without_invented_data() {
+        let report = sample_report();
+        let json = export_trace_file(&report, Vec::new()).expect("export");
+        let file = import_trace_file(&json).expect("import");
+        assert_eq!(file.format, TRACE_FORMAT);
+        assert_eq!(file.schema_version, TRACE_SCHEMA_VERSION);
+        assert_eq!(file.kind, TraceKind::Execution);
+        assert_eq!(file.report, report);
+        assert!(file.boot.is_none());
+        assert!(file.steps.is_empty());
+    }
+
+    #[test]
+    fn boot_trace_round_trip_preserves_phases_and_steps() {
+        let boot = sample_boot();
+        let steps = boot
+            .instructions()
+            .map(|(step, rip, kind)| StepRecord {
+                step,
+                rip,
+                kind: kind.clone(),
+            })
+            .collect();
+        let json = export_boot_trace_file(&boot, steps).expect("export");
+        let file = import_trace_file(&json).expect("import");
+        assert_eq!(file.kind, TraceKind::Boot);
+        let imported = file.clone().into_boot().expect("boot payload");
+        assert_eq!(imported, boot);
+        assert_eq!(file.steps.len(), 6);
+        assert_eq!(file.steps[0].step, 1);
+        assert_eq!(file.steps[5].step, 6);
+    }
+
+    #[test]
+    fn import_rejects_invalid_json_and_unknown_files() {
+        assert!(matches!(
+            import_trace_file("{not json"),
+            Err(TraceImportError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            import_trace_file("{\"hello\":\"world\"}"),
+            Err(TraceImportError::InvalidJson(_))
+        ));
+        let mut value: serde_json::Value =
+            serde_json::from_str(&export_trace_file(&sample_report(), Vec::new()).unwrap())
+                .unwrap();
+        value["format"] = serde_json::json!("something-else");
+        assert_eq!(
+            import_trace_file(&value.to_string()),
+            Err(TraceImportError::NotATrace)
+        );
+        assert!(matches!(
+            import_trace_file(&"x".repeat(MAX_TRACE_FILE_BYTES + 1)),
+            Err(TraceImportError::TooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn import_rejects_unsupported_version_and_missing_fields() {
+        let report = sample_report();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&export_trace_file(&report, Vec::new()).unwrap()).unwrap();
+        value["schema_version"] = serde_json::json!(99);
+        let text = value.to_string();
+        assert_eq!(
+            import_trace_file(&text),
+            Err(TraceImportError::UnsupportedVersion(99))
+        );
+
+        let mut value: serde_json::Value =
+            serde_json::from_str(&export_trace_file(&report, Vec::new()).unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("report");
+        assert!(matches!(
+            import_trace_file(&value.to_string()),
+            Err(TraceImportError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn import_rejects_inconsistent_step_records_and_boot_payload() {
+        let report = sample_report();
+        let steps = vec![StepRecord {
+            step: 7,
+            rip: 0,
+            kind: StepKind::Executed,
+        }];
+        let text = export_trace_file(&report, steps).unwrap();
+        assert!(matches!(
+            import_trace_file(&text),
+            Err(TraceImportError::Malformed(_))
+        ));
+
+        let boot = sample_boot();
+        let mut file = TraceFile::from_boot(&boot, Vec::new());
+        file.boot.as_mut().unwrap().stop = "made up".into();
+        assert!(matches!(
+            file.validate(),
+            Err(TraceImportError::Malformed(_))
+        ));
+
+        let mut file = TraceFile::from_report(&report, Vec::new());
+        file.kind = TraceKind::Boot;
+        assert!(matches!(
+            file.validate(),
+            Err(TraceImportError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn empty_trace_file_round_trips() {
+        let mut report = sample_report();
+        report.stop = crate::core::pipeline::StopReason::StepsExhausted;
+        report.steps = 0;
+        let rax = report.cpu.register(crate::core::cpu::x64::reg::RAX);
+        let boot = BootTrace {
+            guest: "empty.exe".into(),
+            status: BootStatus::Failed,
+            steps: 0,
+            rax,
+            marker_verified: false,
+            stop: "step budget exhausted".into(),
+            events: vec![crate::core::pipeline::boot::BootEvent::FinalResult {
+                status: BootStatus::Failed,
+                steps: 0,
+                rax,
+                stop: "step budget exhausted".into(),
+            }],
+            report,
+        };
+        let json = export_boot_trace_file(&boot, Vec::new()).unwrap();
+        let imported = import_trace_file(&json)
+            .unwrap()
+            .into_boot()
+            .expect("boot payload");
+        assert_eq!(imported.events.len(), 1);
+        assert_eq!(imported.status, BootStatus::Failed);
+    }
+
+    #[test]
+    fn bounded_large_trace_file_round_trips() {
+        // A bounded synthetic trace with many plausible instruction steps.
+        let mut report = sample_report();
+        report.steps = 2_000;
+        let steps: Vec<_> = (0..2_000)
+            .map(|i| StepRecord {
+                step: i + 1,
+                rip: 0x2000_0000_0000 + i,
+                kind: StepKind::Executed,
+            })
+            .collect();
+        let json = export_trace_file(&report, steps.clone()).unwrap();
+        let file = import_trace_file(&json).expect("import bounded trace");
+        assert_eq!(file.steps.len(), 2_000);
+        assert_eq!(file.steps[1_999].step, 2_000);
     }
 
     #[test]

@@ -2,7 +2,7 @@
   "project": "xHoly",
   "schema_version": 1,
   "description": "Roadmap completion tracking against ROADMAP.md. Not a game compatibility percentage. Category and overall values are derived from task data by src/progress.rs and are never stored here.",
-  "last_verification_date": "2026-11-27",
+  "last_verification_date": "2026-11-28",
   "categories": [
     { "id": "cpu", "name": "CPU & Execution", "weight": 20.0 },
     { "id": "hle", "name": "HLE & System Runtime", "weight": 20.0 },
@@ -121,7 +121,7 @@
       "description": "Reading retail package containers.",
       "evidence": "",
       "notes": "Blocked: encrypted containers are not supported. No DRM or encryption bypass is planned." },
-    { "id": "gui-redesign", "name": "Launcher-style GUI", "category": "gui", "weight": 30.0, "status": "Implemented",
+    { "id": "gui-redesign", "name": "Launcher-style GUI", "category": "gui", "weight": 25.0, "status": "Implemented",
       "description": "Windowed launcher GUI with the emulation overlay.",
       "evidence": "src/gui/windowed/ui.rs; tests/gui_tests.rs (Windows)",
       "notes": "Tested on Windows only; Linux untested." },
@@ -140,6 +140,10 @@
     { "id": "gui-compat-report", "name": "Compatibility report", "category": "gui", "weight": 20.0, "status": "Verified",
       "description": "Structured and human-readable import report for an executable.",
       "evidence": "src/core/loader/import_analyzer.rs unit tests: report_uses_evidence_based_generation_and_no_percentages, file_tests",
-      "notes": "HLE import coverage only; not game compatibility." }
+      "notes": "HLE import coverage only; not game compatibility." },
+    { "id": "gui-trace-io", "name": "GUI trace import and export", "category": "gui", "weight": 5.0, "status": "Verified",
+      "description": "Versioned .xholy-trace.json export/import and HLE Trace Viewer integration of M33 guest boot phases, CPU steps and final verdict (M34).",
+      "evidence": "tests/gui_trace_tests.rs (6 tests); tests/cli_progress_tests.rs; src/core/pipeline/trace.rs unit tests",
+      "notes": "Synthetic traces only; no retail boot. File path supplied by --gui-trace or GUI controls; no native dialog dependency." }
   ]
 }

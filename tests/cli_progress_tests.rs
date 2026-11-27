@@ -25,7 +25,7 @@ fn progress_command_prints_roadmap_summary_without_compatibility_claims() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("Overall roadmap completion"), "{text}");
     assert!(text.contains("Roadmap progress only"), "{text}");
-    assert!(text.contains("Last verification: 2026-11-27"), "{text}");
+    assert!(text.contains("Last verification: 2026-11-28"), "{text}");
 }
 
 #[test]
@@ -157,6 +157,52 @@ fn guest_test_command_runs_the_synthetic_boot_and_reports_success() {
     assert_eq!(parsed["marker_verified"], true);
     assert!(parsed["events"].is_array());
     assert!(parsed["report"]["imports"].is_array());
+}
+
+#[test]
+fn guest_test_json_is_importable_as_a_versioned_trace_file() {
+    let out = xholy().args(["--guest-test", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    // `--guest-test --json` stays the M33 wire format (bare BootTrace).
+    // The M34 file format wraps the same data with a schema version.
+    let boot: xholy::core::pipeline::boot::BootTrace =
+        serde_json::from_slice(&out.stdout).expect("BootTrace deserialises");
+    assert_eq!(
+        boot.status,
+        xholy::core::pipeline::boot::BootStatus::Success
+    );
+    let steps = boot
+        .instructions()
+        .map(|(step, rip, kind)| xholy::core::pipeline::StepRecord {
+            step,
+            rip,
+            kind: kind.clone(),
+        })
+        .collect();
+    let file = xholy::core::pipeline::trace::TraceFile::from_boot(&boot, steps);
+    let json = file.to_json().expect("versioned trace JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["format"], "xholy-trace");
+    assert_eq!(parsed["schema_version"], 1);
+    assert_eq!(parsed["kind"], "Boot");
+    let imported =
+        xholy::core::pipeline::trace::import_trace_file(&json).expect("versioned import");
+    assert_eq!(imported, file);
+}
+
+#[test]
+fn gui_trace_flag_does_not_require_a_graphical_environment() {
+    let out = xholy()
+        .args(["--gui-headless", "--gui-trace", "missing.xholy-trace.json"])
+        .output()
+        .unwrap();
+    // The GUI reports the import problem in its status line; headless
+    // rendering must still succeed without a window.
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 #[test]

@@ -30,6 +30,14 @@ pub enum GuiAction {
     ToggleSettings,
     /// Ctrl+Alt+T: open or close the emulation menu.
     EmulationMenu,
+    /// Ctrl+O: open a `.xholy-trace.json` file from `trace_path`.
+    OpenTrace,
+    /// Ctrl+S: save the current trace to `trace_path`.
+    SaveTrace,
+    /// Ctrl+R: reload the trace from `trace_path`.
+    RefreshTrace,
+    /// Delete: clear the current trace.
+    ClearTrace,
     /// Quit the app.
     Quit,
 }
@@ -77,6 +85,11 @@ impl InputState {
     pub fn keyboard_input(&mut self, event: &KeyEvent) {
         // Ctrl+Alt+T opens the emulation menu (return to main menu).
         if event.state == ElementState::Pressed
+            && self.trace_shortcut(&event.logical_key, self.modifiers.control_key())
+        {
+            return;
+        }
+        if event.state == ElementState::Pressed
             && self.modifiers.control_key()
             && self.modifiers.alt_key()
             && matches!(&event.logical_key, Key::Character(s) if s.eq_ignore_ascii_case("t"))
@@ -112,6 +125,7 @@ impl InputState {
             Key::Named(winit::keyboard::NamedKey::F5) => Some(GuiAction::SaveState),
             Key::Named(winit::keyboard::NamedKey::F9) => Some(GuiAction::LoadState),
             Key::Named(winit::keyboard::NamedKey::F11) => Some(GuiAction::ToggleFullscreen),
+            Key::Named(winit::keyboard::NamedKey::Delete) => Some(GuiAction::ClearTrace),
             Key::Character(s) if s.eq_ignore_ascii_case("o") => Some(GuiAction::ToggleSettings),
             _ => None,
         };
@@ -125,6 +139,25 @@ impl InputState {
         if button == MouseButton::Left {
             self.mouse_down = state == ElementState::Pressed;
         }
+    }
+
+    /// Map a trace shortcut by logical key (shared by winit input and
+    /// headless/test callers; no platform-specific event data required).
+    pub fn trace_shortcut(&mut self, key: &Key, ctrl: bool) -> bool {
+        if !ctrl {
+            return false;
+        }
+        let action = match key {
+            Key::Character(s) if s.eq_ignore_ascii_case("o") => Some(GuiAction::OpenTrace),
+            Key::Character(s) if s.eq_ignore_ascii_case("s") => Some(GuiAction::SaveTrace),
+            Key::Character(s) if s.eq_ignore_ascii_case("r") => Some(GuiAction::RefreshTrace),
+            _ => None,
+        };
+        if let Some(action) = action {
+            self.actions.push(action);
+            return true;
+        }
+        false
     }
 
     /// Map a mouse-motion event (position in physical pixels).

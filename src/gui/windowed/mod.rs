@@ -69,13 +69,27 @@ impl WindowApp {
             backends,
             ..Default::default()
         });
-        let state = WindowedGuiState {
+        let mut state = WindowedGuiState {
             games: scan_games_windowed(),
             fps_limit: config.fps_limit,
             vsync: config.vsync,
             fullscreen: config.fullscreen,
             ..Default::default()
         };
+        // M34: an exported trace can be supplied at startup (CLI
+        // `--gui-trace PATH`), for both windowed and headless runs.
+        if let Some(path) = &config.trace_file {
+            match std::fs::read_to_string(path) {
+                Ok(text) => match crate::core::pipeline::trace::import_trace_file(&text) {
+                    Ok(file) => {
+                        state.load_trace_file(file, Some(path.display().to_string()));
+                        state.set_trace_status(format!("loaded {}", path.display()));
+                    }
+                    Err(e) => state.set_trace_status(format!("cannot import trace: {e}")),
+                },
+                Err(e) => state.set_trace_status(format!("cannot read trace: {e}")),
+            }
+        }
         let pacer = FramePacer::with_mode(
             config.fps_limit.unwrap_or(0),
             config.vsync,
@@ -188,8 +202,79 @@ impl WindowApp {
                 GuiAction::PrevGame => self.state.select_prev(),
                 GuiAction::ToggleFullscreen => self.toggle_fullscreen(),
                 GuiAction::ToggleSettings => self.state.settings_open = !self.state.settings_open,
+                GuiAction::OpenTrace => self.open_trace(),
+                GuiAction::SaveTrace => self.save_trace(),
+                GuiAction::RefreshTrace => self.refresh_trace(),
+                GuiAction::ClearTrace => self.state.clear_trace(),
                 GuiAction::Quit => self.should_exit = true,
             }
+        }
+    }
+
+    /// Open the trace at `state.trace_path` (no native dialog: the path is
+    /// supplied by `--gui-trace` or typed into the viewer's path field).
+    fn open_trace(&mut self) {
+        let Some(path) = self.state.trace_path.clone() else {
+            self.state
+                .set_trace_status("open trace: no path set (use --gui-trace PATH)");
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match crate::core::pipeline::trace::import_trace_file(&text) {
+                Ok(file) => {
+                    self.state.load_trace_file(file, Some(path.clone()));
+                    self.state.set_trace_status(format!("opened {path}"));
+                }
+                Err(e) => self
+                    .state
+                    .set_trace_status(format!("cannot import trace: {e}")),
+            },
+            Err(e) => self
+                .state
+                .set_trace_status(format!("cannot read trace: {e}")),
+        }
+    }
+
+    /// Save the current trace to `state.trace_path` in the versioned format.
+    fn save_trace(&mut self) {
+        let Some(path) = self.state.trace_path.clone() else {
+            self.state
+                .set_trace_status("save trace: no path set (use --gui-trace PATH)");
+            return;
+        };
+        let Some(report) = self.state.trace_report.clone() else {
+            self.state.set_trace_status("save trace: no trace loaded");
+            return;
+        };
+        let file = match self.state.boot_trace.clone() {
+            Some(boot) => crate::core::pipeline::trace::TraceFile::from_boot(
+                &boot,
+                self.state.trace_steps.clone(),
+            ),
+            None => crate::core::pipeline::trace::TraceFile::from_report(
+                &report,
+                self.state.trace_steps.clone(),
+            ),
+        };
+        match file.to_json() {
+            Ok(text) => match std::fs::write(&path, text.as_bytes()) {
+                Ok(()) => self.state.set_trace_status(format!("saved {path}")),
+                Err(e) => self
+                    .state
+                    .set_trace_status(format!("cannot write trace: {e}")),
+            },
+            Err(e) => self
+                .state
+                .set_trace_status(format!("cannot serialise trace: {e}")),
+        }
+    }
+
+    /// Re-read the trace from its source path, if one is known.
+    fn refresh_trace(&mut self) {
+        if self.state.trace_path.is_some() {
+            self.open_trace();
+        } else {
+            self.state.set_trace_status("refresh: no trace source");
         }
     }
 
@@ -550,6 +635,20 @@ impl WindowApp {
             if rect.contains(mx, my) {
                 if let Some(filter) = state::LogFilter::parse(label) {
                     self.state.log_filter = filter;
+                }
+                self.input.mouse_down = false;
+                return;
+            }
+        }
+        // Trace file controls (OPEN / SAVE / REFRESH / CLEAR)
+        for (rect, label) in &layout.trace_actions {
+            if rect.contains(mx, my) {
+                match *label {
+                    "OPEN" => self.open_trace(),
+                    "SAVE" => self.save_trace(),
+                    "REFRESH" => self.refresh_trace(),
+                    "CLEAR" => self.state.clear_trace(),
+                    _ => {}
                 }
                 self.input.mouse_down = false;
                 return;

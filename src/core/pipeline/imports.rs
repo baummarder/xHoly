@@ -8,10 +8,10 @@
 use crate::core::hle::{HleRegistry, ImplementationState};
 use crate::core::loader::import_analyzer::{classify_import, import_symbol_name};
 use crate::core::loader::pe64::Pe64Image;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One import bound to its slot in the guest IAT.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedImport {
     /// Importing module (DLL), as written in the import descriptor.
     pub module: String,

@@ -69,6 +69,8 @@ pub struct UiLayout {
     pub trace_filters: Vec<(Rect, &'static str)>,
     /// HLE Trace Viewer timeline rows paired with their filtered index.
     pub trace_events: Vec<(Rect, usize)>,
+    /// Trace file controls (`OPEN`/`SAVE`/`REFRESH`/`CLEAR`).
+    pub trace_actions: Vec<(Rect, &'static str)>,
     /// Buttons of the emulation overlay.
     pub menu: Vec<(Rect, &'static str)>,
     /// Bounds of the preview area.
@@ -1041,27 +1043,82 @@ fn draw_hle_trace(
         return;
     };
 
-    // Summary bar: image, entry, RIP, steps, stop reason
-    fill_rect_rounded(fb, w, area.x, area.y, area.w, 40, 10, PANEL);
+    // Summary bar: verdict, image, entry, RIP, steps, stop reason
+    fill_rect_rounded(fb, w, area.x, area.y, area.w, 68, 10, PANEL);
+    let verdict = state
+        .boot_trace
+        .as_ref()
+        .map(|boot| boot.status.label())
+        .unwrap_or("NO BOOT TRACE");
     let summary_line = format!(
-        "{} | ENTRY={:#X} | RIP={:#X} | STEPS={} | STOP={}",
-        report.image.name, report.image.entry_va, report.cpu.rip, report.steps, report.stop
+        "{} | {} | ENTRY={:#X} | RIP={:#X} | STEPS={} | STOP={}",
+        verdict,
+        report.image.name,
+        report.image.entry_va,
+        report.cpu.rip,
+        report.steps,
+        report.stop
     );
     let max_sum = (area.w.saturating_sub(32) / 8) as usize;
+    let verdict_color = match state.boot_trace.as_ref().map(|b| b.status) {
+        Some(crate::core::pipeline::boot::BootStatus::Success) => ACCENT,
+        Some(crate::core::pipeline::boot::BootStatus::Incomplete) => YELLOW,
+        Some(crate::core::pipeline::boot::BootStatus::Failed) => RED,
+        None => MUTED,
+    };
     draw_text(
         fb,
         w,
         h,
         area.x + 16,
-        area.y + 14,
+        area.y + 10,
         &truncate(&summary_line.to_ascii_uppercase(), max_sum),
-        TEXT,
+        verdict_color,
+        1,
+    );
+    // Source path and last Open/Save/Refresh result — never invented.
+    let source = format!(
+        "SOURCE={} | {}",
+        state.trace_path.as_deref().unwrap_or("none"),
+        state
+            .trace_status
+            .as_deref()
+            .unwrap_or("no file action yet")
+    );
+    draw_text(
+        fb,
+        w,
+        h,
+        area.x + 16,
+        area.y + 44,
+        &truncate(&source.to_ascii_uppercase(), max_sum),
+        MUTED,
         1,
     );
 
+    // Trace file controls: real actions, hit-tested in WindowApp.
+    let mut ax = area.x + area.w.saturating_sub(4 * 92);
+    for (label, action) in [
+        ("OPEN", "OPEN"),
+        ("SAVE", "SAVE"),
+        ("REFRESH", "REFRESH"),
+        ("CLEAR", "CLEAR"),
+    ] {
+        let r = Rect {
+            x: ax,
+            y: area.y + 78,
+            w: 84,
+            h: 24,
+        };
+        fill_rect_rounded(fb, w, r.x, r.y, r.w, r.h, 10, CARD);
+        draw_text(fb, w, h, r.x + 8, r.y + 8, label, TEXT, 1);
+        layout.trace_actions.push((r, action));
+        ax += 92;
+    }
+
     // Sub-panel tabs
     let mut px = area.x;
-    let py = area.y + 50;
+    let py = area.y + 116;
     for panel in TracePanel::ALL {
         let label = panel.label();
         let pw = text_width(label, 1) + 28;
@@ -1093,6 +1150,78 @@ fn draw_hle_trace(
         TracePanel::Imports => draw_trace_imports(fb, w, h, report, &content),
         TracePanel::HleCalls => draw_trace_hle_calls(fb, w, h, report, &content),
         TracePanel::Faults => draw_trace_faults(fb, w, h, report, &content),
+        TracePanel::Boot => draw_trace_boot(fb, w, h, state, &content),
+    }
+}
+
+/// Draw boot phases, instruction records and the final verdict.
+///
+/// Every line comes from the imported [`BootTrace`]; when no boot trace is
+/// attached the panel says so instead of inventing phases.
+fn draw_trace_boot(fb: &mut Framebuffer, w: u32, h: u32, state: &WindowedGuiState, area: &Rect) {
+    let Some(boot) = &state.boot_trace else {
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 16,
+            area.y + 20,
+            "NO BOOT PHASES — LOAD A --GUEST-TEST TRACE",
+            MUTED,
+            1,
+        );
+        return;
+    };
+    let verdict = format!(
+        "FINAL: {} | STEPS: {} | RAX: {:#X} | MARKER: {}",
+        boot.status.label(),
+        boot.steps,
+        boot.rax,
+        boot.marker_verified
+    );
+    let color = match boot.status {
+        crate::core::pipeline::boot::BootStatus::Success => ACCENT,
+        crate::core::pipeline::boot::BootStatus::Incomplete => YELLOW,
+        crate::core::pipeline::boot::BootStatus::Failed => RED,
+    };
+    draw_text(
+        fb,
+        w,
+        h,
+        area.x + 16,
+        area.y + 16,
+        &truncate(
+            &verdict.to_ascii_uppercase(),
+            (area.w.saturating_sub(32) / 8) as usize,
+        ),
+        color,
+        1,
+    );
+    let max_lines = area.h.saturating_sub(60) / 20;
+    for (index, event) in boot.events.iter().take(max_lines as usize).enumerate() {
+        let line = format!("{:>3} {}", index + 1, event.render_line());
+        draw_text(
+            fb,
+            w,
+            h,
+            area.x + 16,
+            area.y + 44 + index as u32 * 20,
+            &truncate(&line, (area.w.saturating_sub(32) / 8) as usize),
+            if matches!(
+                event,
+                crate::core::pipeline::boot::BootEvent::FinalResult { .. }
+            ) {
+                color
+            } else {
+                TEXT
+            },
+            1,
+        );
+    }
+    if !state.trace_steps.is_empty() {
+        let y = area.y + 44 + max_lines.saturating_sub(1) * 20;
+        let note = format!("{} INSTRUCTION RECORDS PRESERVED", state.trace_steps.len());
+        draw_text(fb, w, h, area.x + 16, y, &note, MUTED, 1);
     }
 }
 

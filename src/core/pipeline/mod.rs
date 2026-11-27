@@ -39,7 +39,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::cpu::x64::{reg, CpuFault, StackBounds, StepOutcome, X64Cpu};
 use crate::core::hle::runtime::{DispatchStatus, HleRuntime, HleValue};
@@ -115,7 +115,7 @@ impl fmt::Display for LoadError {
 impl std::error::Error for LoadError {}
 
 /// Why execution stopped — exactly one cause is reported.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StopReason {
     /// The entry point executed `ret` onto the pushed sentinel.
     Returned,
@@ -177,7 +177,7 @@ impl fmt::Display for StopReason {
 }
 
 /// Metadata of the loaded executable (diagnostics/report).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageMeta {
     /// Label only (file or fixture name) — never a host path.
     pub name: String,
@@ -195,9 +195,9 @@ pub struct ImageMeta {
 
 /// Structured result of one guest run (report + trace viewer feed).
 ///
-/// `Serialize` only: reports are written for external consumers; xHoly
-/// never parses them back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Serialisable in both directions since M34: exported traces are read
+/// back by the GUI. Import is always validated by `trace::import_trace_file`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionReport {
     /// Executable metadata.
     pub image: ImageMeta,
@@ -343,7 +343,7 @@ pub struct GuestSession {
 }
 
 /// What one retired guest instruction did (M33 boot trace source).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StepKind {
     /// Ordinary instruction retired.
     Executed,
@@ -362,7 +362,7 @@ pub enum StepKind {
 }
 
 /// One retired (or faulting) instruction of a guest run.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepRecord {
     /// Retired instruction counter (faults keep the previous value).
     pub step: u64,
@@ -648,7 +648,7 @@ impl GuestSession {
                 return Some(StopReason::Fault(CpuFault::IllegalInstruction {
                     rip: self.cpu.rip,
                     opcode: 0xFF,
-                    reason: "call through an unregistered HLE slot",
+                    reason: "call through an unregistered HLE slot".into(),
                 }));
             }
         };

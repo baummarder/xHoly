@@ -2,20 +2,19 @@
 //!
 //! An ordered event trace for one guest session: what was loaded, how
 //! each import was classified, every HLE dispatch with its arguments
-//! and outcome, CPU faults, and the final stop reason. This is the data
-//! model a future HLE Trace Viewer will render — this milestone ships
-//! the text rendering only, no GUI.
+//! and outcome, CPU faults, and the final stop reason. Consumed by the
+//! HLE Trace Viewer and by the M34 trace import/export format.
 
 use crate::core::cpu::x64::CpuFault;
 use crate::core::hle::runtime::DispatchStatus;
 use crate::core::hle::ImplementationState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One entry in the execution trace.
 ///
-/// `Serialize` only: the trace is written for external consumers (the
-/// future trace viewer); xHoly never parses traces back.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// Deserializable since M34 so exported traces can be imported. Import is
+/// validated by `trace::import_trace_file`; events carry no host data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiagnosticEvent {
     /// The image was parsed, validated, relocated and mapped.
     Loaded {

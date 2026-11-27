@@ -28,6 +28,11 @@ struct Args {
     #[arg(long, value_name = "PATH", requires = "trace")]
     trace_out: Option<std::path::PathBuf>,
 
+    /// Load a previously exported `.xholy-trace.json` into the GUI trace viewer.
+    /// Works with --gui, --gui-headless and --gui-tui; never executes the file.
+    #[arg(long, value_name = "PATH")]
+    gui_trace: Option<PathBuf>,
+
     /// Run the self-contained synthetic M33 guest boot (no file access).
     /// Prints an ordered boot trace with load, memory, stack, entry point,
     /// CPU steps, HLE invocation/return, guest exit and final result.
@@ -465,6 +470,7 @@ fn main() {
                 None => eprintln!("xHoly: warning: bad --aa '{a}', expected off|fxaa|msaa4"),
             }
         }
+        gui_config.trace_file = args.gui_trace.clone();
         if gui_headless {
             gui_config.headless = true;
             let frames = args.max_frames.unwrap_or(300) as u32;
@@ -493,6 +499,7 @@ fn main() {
         }
     }
     let _ = args.headless; // explicit flag; headless is the default path
+    let _ = args.gui_trace; // consumed by the GUI block above; no-op on CLI-only paths
 
     if args.drives {
         let drives = detect_drives();
