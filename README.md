@@ -4,348 +4,332 @@
 
 <p align="center"><b>Redeem Your Games</b></p>
 
-# xHoly — Xbox One & Xbox Series X|S Emulator
+# xHoly — Independent Xbox HLE Emulator (Research)
 
-xHoly is an independent, open-source emulator for **Xbox One** and **Xbox
-Series X|S** software, written primarily in **Rust** and designed for
-**Windows x86-64** and **Linux x86-64** hosts. It is built on a
-**High-Level Emulation (HLE)** architecture: instead of simulating the
-console's hardware, xHoly implements the console's software interfaces —
-imported DLL functions, memory services and system services — directly on
-the host.
+xHoly is an independent, open-source **high-level emulation (HLE) research
+project** for Xbox One and Xbox Series X|S software, written primarily in
+Rust. It runs self-authored PE32+ guest programs through its own bounded
+x86-64 pipeline and reimplements console software interfaces on the host.
 
-> **Status: early development.** xHoly can load, validate and execute
-> bounded PE32+ guest programs in its own x86-64 pipeline and presents
-> host-rendered frames. **No retail Xbox title has been confirmed to boot
-> or run.** See [Compatibility and current limitations](#7-compatibility-and-current-limitations).
+> **Honest status:** xHoly executes synthetic PE32+ guests end-to-end
+> (loader → memory → CPU → HLE → trace). **No retail Xbox title has been
+> confirmed to boot or run.** The Xbox HLE registry contains **21 entries,
+> none fully implemented**; only two XMem functions are partially
+> implemented. xHoly VM services are real but are **not Xbox APIs**.
 
 ---
 
 ## Table of contents
 
-1. [What is xHoly?](#1-what-is-xholy)
-2. [Project vision and goals](#2-project-vision-and-goals)
-3. [Supported platforms](#3-supported-platforms)
-4. [Architecture](#4-architecture)
-5. [Implemented features](#5-implemented-features)
-6. [Screenshots and interface overview](#6-screenshots-and-interface-overview)
-7. [Compatibility and current limitations](#7-compatibility-and-current-limitations)
-8. [Installation and usage](#8-installation-and-usage)
-9. [Building from source](#9-building-from-source)
-10. [CLI reference](#10-cli-reference)
-11. [Development roadmap](#11-development-roadmap)
-12. [Contributing](#12-contributing)
-13. [Third-party components and acknowledgements](#13-third-party-components-and-acknowledgements)
-14. [License](#14-license)
-15. [Legal information and independence](#15-legal-information-and-independence)
+1. [Project goals](#1-project-goals)
+2. [Current development status](#2-current-development-status)
+3. [Supported host platforms](#3-supported-host-platforms)
+4. [Xbox One and Xbox Series X|S](#4-xbox-one-and-xbox-series-xs)
+5. [Architecture overview](#5-architecture-overview)
+6. [HLE architecture](#6-hle-architecture)
+7. [Xbox HLE compatibility](#7-xbox-hle-compatibility)
+8. [xHoly VM services and their boundary](#8-xholy-vm-services-and-their-boundary)
+9. [CPU emulation](#9-cpu-emulation)
+10. [Guest memory](#10-guest-memory)
+11. [PE32+ loader](#11-pe32-loader)
+12. [Guest execution pipeline](#12-guest-execution-pipeline)
+13. [GPU architecture and status](#13-gpu-architecture-and-status)
+14. [Trace and diagnostics](#14-trace-and-diagnostics)
+15. [CLI](#15-cli)
+16. [GUI](#16-gui)
+17. [Building from source](#17-building-from-source)
+18. [Installation and usage](#18-installation-and-usage)
+19. [Tests](#19-tests)
+20. [Project structure](#20-project-structure)
+21. [Roadmap](#21-roadmap)
+22. [Known limitations](#22-known-limitations)
+23. [Legal and technical separation](#23-legal-and-technical-separation)
+24. [Contributing and development](#24-contributing-and-development)
+25. [License and acknowledgements](#25-license-and-acknowledgements)
 
 ---
 
-## 1. What is xHoly?
+## 1. Project goals
 
-xHoly is an emulator project targeting the Xbox One and Xbox Series X|S
-consoles. The long-term goal is to run compatible retail and homebrew
-software on Windows and Linux PCs, covering the console's system
-services, memory model and graphics stack through high-level emulation.
-
-The project is organized around a single Rust crate (`xholy`) that
-contains the emulator core, the loader, the guest CPU pipeline, the HLE
-runtime, the GUI frontends and a set of independently testable
-infrastructure modules. An optional Scala runtime exists for JVM-based
-game modules and a Scala.js web bundle.
-
-xHoly is under active development by an independent community
-contributor. It is not a finished product, and its current capabilities
-are deliberately described below in concrete terms.
-
-## 2. Project vision and goals
-
-The project's direction is defined in [ROADMAP.md](ROADMAP.md) and the
-binding architecture decision record
+The project direction is defined in [ROADMAP.md](ROADMAP.md) and the binding
+architecture decision
 [docs/adr/0001-target-architecture.md](docs/adr/0001-target-architecture.md):
 
-- Emulate **Xbox One and Xbox Series X|S** software on **Windows and
-  Linux x86-64** hosts.
-- Use **HLE**: reimplement console system interfaces (XAM-style services,
-  memory services such as `xmem`, graphics APIs such as `d3d12_xs`) as
-  host-side modules instead of simulating console hardware cycle by
-  cycle.
-- Keep the graphics path **host-vendor-independent** (wgpu; Vulkan is a
-  candidate cross-platform backend).
-- Keep the codebase **modular and maintainable**: every subsystem is an
-  independent, unit-tested module; diagnostics and progress are derived
-  from code, not asserted in prose.
-- Stay an **independent open-source project** with no Microsoft SDK
-  dependency as an architectural goal.
+- target **Xbox Series X|S (Gen9)** software; Xbox One is a historical
+  target description, with no retail compatibility claimed;
+- use **HLE** for console interfaces instead of cycle-accurate hardware
+  simulation;
+- keep a **modular, independently testable** Rust crate with honest
+  diagnostics and derived progress;
+- keep guest/host address spaces strictly separate and never expose host
+  pointers to guest code;
+- remain independent: **no Microsoft GDK/GDKX dependency**, no copied
+  ScarlettX implementation, no proprietary SDK content.
 
-## 3. Supported platforms
+The complete Xbox API evidence audit lives in
+[`docs/xbox-hle-inventory.md`](docs/xbox-hle-inventory.md).
+
+## 2. Current development status
+
+| Area | Reality |
+|---|---|
+| PE32+ loading | Parse, validate, map, relocate and resolve imports for synthetic fixtures |
+| Guest CPU | Small, explicitly bounded x86-64 interpreter subset |
+| Guest execution | Full chain: loader → memory → stack → CPU → HLE → guest result → trace |
+| Xbox HLE | 7 modules / 21 entries: **0 Implemented**, 2 PartiallyImplemented, 2 Unsupported, 17 Unknown |
+| xHoly VM services | 4 modules / 17 functions, fully implemented, explicitly **not Xbox APIs** |
+| Trace | Schema v2 JSON, v1 import compatible; CLI and GUI share the same data |
+| Retail compatibility | **None confirmed** — no retail title boot |
+
+Progress percentages are roadmap-derived, not compatibility numbers.
+
+## 3. Supported host platforms
 
 | Platform | State |
 |---|---|
-| Windows x86-64 | **Primary development target.** Unit tests, integration tests, windowed GUI and CLI verified on the development host. |
-| Linux x86-64 | **Supported build target.** CI runs `cargo test` and `cargo clippy` on Ubuntu; not verified locally on this machine. |
-| ARM64 hosts, macOS | **Not supported.** Outside the target scope. |
+| Windows x86-64 | Primary development target; CLI, tests and windowed GUI verified on the development host |
+| Linux x86-64 | Supported build target in CI; not verified locally on the development machine |
+| ARM64 hosts, macOS | Not supported; outside the target scope |
 
-Guest targets are Xbox One / Xbox Series X|S (x86-64 guests). Legacy
-Xbox 360 code exists behind feature flags and is outside the current
-target scope.
+Guest code is x86-64. Legacy Xbox 360 / PowerPC / AArch64 demo code remains
+behind feature flags or as test harnesses and is **not** a Series X|S path.
 
-## 4. Architecture
+## 4. Xbox One and Xbox Series X|S
 
-xHoly's core pipeline for guest execution is:
+ADR 0001 declares **Xbox Series X|S (Gen9 / Scarlett)** the only current
+target. Xbox One appears in the project description as the broader console
+family, but there is no verified Xbox One package path, no kernel ABI and no
+retail compatibility claim. The PE32+ format is used for synthetic guests;
+ordinary Windows PE32+ files are **not** complete Xbox executable packages.
+Retail containers, encryption and access control are out of scope.
 
+## 5. Architecture overview
+
+```mermaid
+flowchart TD
+    CLI["CLI<br/>src/main.rs"] --> PE["PE32+ loader<br/>pe64.rs"]
+    GUI["GUI / HLE viewer<br/>src/gui/windowed"] --> TRACE
+    PE --> GS["Guest execution pipeline<br/>GuestSession"]
+    GS --> MEM["GuestMemory / GuestSpace<br/>memory.rs"]
+    GS --> CPU["CPU interpreter<br/>cpu/x64.rs (bounded subset)"]
+    CPU --> ABI["Microsoft x64 Guest ABI<br/>pipeline/abi.rs"]
+    ABI --> RES["HLE resolver<br/>hle/resolve.rs"]
+    RES --> DISP["HLE dispatcher<br/>hle/runtime.rs"]
+    DISP --> XBOX["Xbox HLE<br/>7 modules / 21 entries<br/>0 fully implemented"]
+    DISP --> VM["xHoly VM services<br/>xh_vm.* — NOT Xbox APIs"]
+    MEM --> XMEM["GuestHeap<br/>hle/xmem.rs"]
+    VM --> XMEM
+    GS --> TRACE["Trace system<br/>pipeline/trace.rs"]
+    DISP --> TRACE
+    TRACE --> GUI
+    TRACE --> CLI
+    classDef box fill:#1b2a4a,stroke:#4f8cff,color:#ffffff;
+    classDef sep fill:#3a2438,stroke:#ff6fb5,color:#ffffff;
+    class CLI,GUI,PE,GS,MEM,CPU,ABI,RES,DISP,TRACE,XMEM box;
+    class XBOX,VM sep;
 ```
-PE32+ image ──► loader/pe64.rs ──► guest memory ──► X64Cpu (bounded x86-64)
-   (validate,              (section mapping,      (subset decoder /
-    sections, IAT)          relocations, IAT)       interpreter)
-                                      │
-                                      ▼
-                            pipeline/mod.rs GuestSession
-                            (imports → HleRuntime dispatch,
-                             diagnostics, execution report)
-                                      │
-                    ┌─────────────────┼──────────────────┐
-                    ▼                 ▼                  ▼
-              hle/runtime.rs     hle/xmem.rs        hle/graphics.rs
-              (dispatch,         (guest heap:       (guest/host
-               structured         alloc/free,        seam; no fake
-               results)           tracking)          D3D12)
-```
 
-| Component | Path | State |
+The visual separation between Xbox HLE (compatibility claims) and xHoly VM
+services (scaffold) is deliberate and enforced in code, tests and docs.
+
+## 6. HLE architecture
+
+- **Registry** (`src/core/hle/mod.rs`): metadata only. States are
+  `Implemented`, `PartiallyImplemented`, `Unsupported`, `Unknown`. No
+  function signature, ordinal, convention or return value is invented.
+- **Resolver** (`src/core/hle/resolve.rs`): one pure verdict rule shared by
+  the import analyzer, the guest import binder and the dispatcher. Explicit
+  function entries always win; only explicitly unsupported modules fall
+  back; partial modules never inherit credit.
+- **Dispatcher/Runtime** (`src/core/hle/runtime.rs`): the only call path.
+  Registered implementations may complete or fail; `Unsupported`/`Unknown`
+  results never carry a value. Bounded failure log (64) and dispatch trace
+  (128), typed `DispatchFailure`, `call_count()` and `reset_diagnostics()`.
+- **Execution context** (`HleContext`): guest heap plus deterministic xHoly
+  VM kernel/system state. No global mutable state.
+
+## 7. Xbox HLE compatibility
+
+| Module | State | Notes |
 |---|---|---|
-| PE32+ parser: validation, section mapping, relocations, IAT | `src/core/loader/pe64.rs`, `src/core/pipeline/imports.rs` | Implemented for synthetic PE32+ fixtures; no delay-load, TLS callbacks or encrypted retail packages |
-| Read-only import analyzer | `src/core/loader/import_analyzer.rs` | Implemented (`--analyze`, `--json`) |
-| Guest memory | `src/core/memory.rs`, `src/core/kernel/pte.rs` | Flat guest address space implemented; PTE model only, no MMU |
-| Bounded x86-64 CPU | `src/core/cpu/x64.rs` | Partial: bounded instruction subset, not a complete x86-64 emulator |
-| Microsoft x64 calling convention | `src/core/pipeline/abi.rs` | Partial: RCX/RDX/R8/R9 + stack args, shadow space, stack bounds; no XMM/float args |
-| HLE API registry | `src/core/hle/mod.rs` | Implemented: metadata registry with verified-evidence discipline |
-| HLE dispatch runtime | `src/core/hle/runtime.rs` | Implemented: structured Completed/Unsupported/Unknown/Failed results |
-| xmem guest memory services | `src/core/hle/xmem.rs` | Partial: `XMemAlloc`/`XMemFree` shims; attribute bitfields not decoded |
-| Guest execution pipeline | `src/core/pipeline/mod.rs` | Implemented for synthetic PE32+ guests |
-| Execution diagnostics + trace | `src/core/pipeline/diagnostics.rs`, `src/core/pipeline/trace.rs` | Implemented (`--trace`, `--trace-out`, trace viewer in GUI) |
-| Execution reports | `src/core/pipeline/mod.rs` (`ExecutionReport`) | Implemented |
-| XEX2 fixture loader | `src/core/loader/xex_parser.rs`, `games/minimal/` | Partial: contiguous fixture layout only; no retail XEX |
-| AArch64 test interpreter | `src/core/cpu/interpreter.rs` | Experimental test harness (not the Xbox ISA) |
-| WASM JIT research subset | `src/jit/` | Experimental: x86-64 → WASM subset compiler + interpreter |
-| Host GPU presentation | `src/gui/windowed/renderer.rs` | Partial: wgpu presentation + guest framebuffer blit; **no guest draw-call translation** |
-| Guest→host graphics seam | `src/core/hle/graphics.rs` | Architecture only; no fake device or shader translation |
-| Shader work | `src/core/shader/dxil_parser.rs` | Partial: DXIL parsing research; no Xbox shader compatibility |
-| Swapchain state | `src/gpu/swapchain.rs` | Model only |
-| Scala runtime bridge | `scala/`, `src/runtime/scala_bridge.rs` | Implemented bridge; JVM/Scala.js modules |
-| Windowed GUI (winit + wgpu) | `src/gui/windowed/` | Implemented; synthetic-guest launch path, HLE trace viewer, console log |
-| Terminal UI (ratatui) | `src/gui/ratatui_backend.rs` | Implemented |
-| Infrastructure modules | `src/config`, `src/save`, `src/input`, `src/logging`, `src/mod_system`, `src/cheat_engine`, `src/benchmark`, `src/cloud`, `src/network`, `src/telemetry`, `src/multiplayer`, `src/storage`, `src/utils`, `src/presence` | Implemented as headless, unit-tested modules; several are models without real backends (see limitations) |
+| `xam.xex` | Unknown | Only Xbox 360 Xenia ordinals; excluded by ADR 0001 |
+| `xgameruntime.dll` | Unsupported | No implementation; no public signature in repo |
+| `d3d12_xs.dll` | Unsupported | No guest device shim or draw translation |
+| `xmem.dll` | PartiallyImplemented | `XMemAlloc`/`XMemFree` only; attributes not decoded |
+| `xg_xs.dll` | Unsupported | Exact imports differ from MIT samples |
+| `gameinput.dll` | Unsupported | Ordinal claim only; no signature/vtable |
+| `msvcp140.dll` | Unsupported | Host CRT, not an Xbox API |
 
-## 5. Implemented features
+Function tally: **0 Implemented, 2 PartiallyImplemented, 2 Unsupported,
+17 Unknown**. Full per-API evidence and the "cannot implement without
+inventing semantics" list are in
+[`docs/xbox-hle-inventory.md`](docs/xbox-hle-inventory.md). No compatibility
+percentage is derived from this table.
 
-Verified against the repository (unit/integration tests green on the
-development host):
+## 8. xHoly VM services and their boundary
 
-- **PE32+ loading pipeline** — parse, validate, map sections, apply
-  relocations, resolve imports for synthetic PE32+ guest images.
-- **Bounded x86-64 guest execution** — a documented instruction subset
-  executes real guest code end-to-end (load → run → HLE dispatch →
-  exit), with configurable Microsoft x64 ABI calling convention
-  (integer args in RCX/RDX/R8/R9 plus stack arguments, 32-byte shadow
-  space, stack bounds checking).
-- **HLE runtime** — a single registry-driven dispatcher that separates
-  implemented functions from unsupported/unknown ones and returns
-  structured results; `XMemAlloc`/`XMemFree` are the first implemented
-  guest services backed by a tracked guest heap.
-- **Diagnostics and tracing** — per-dispatch diagnostic events, an
-  execution report, `--trace`/`--trace-out`/`--json` CLI export, and a
-  trace viewer inside the windowed GUI.
-- **First guest boot (M33)** — `xholy --guest-test` loads a fully
-  synthetic PE32+ guest from source, executes bounded x86-64 code,
-  dispatches `xmem.dll!XMemAlloc` through its IAT slot, writes a marker
-  into the guest heap and returns `RAX = 0x4D33`. The ordered boot trace
-  covers load, memory, stack, entry point, CPU steps, HLE invocation and
-  return, guest exit and final result; it distinguishes success,
-  incomplete and failed boots. See [docs/milestone-33.md](docs/milestone-33.md).
-- **GUI trace integration (M34)** — execution reports and M33 boot traces
-  can be exported to and imported from a versioned `.xholy-trace.json`
-  file. The HLE Trace Viewer shows boot phases, instruction records, HLE
-  calls and the SUCCESS/INCOMPLETE/FAILED verdict; Open, Save, Refresh
-  and Clear controls perform real file actions. See
-  [docs/milestone-34.md](docs/milestone-34.md).
-- **Guest execution expansion (M35)** — the bounded interpreter also
-  supports LEA, INC/DEC, MOVZX/MOVSX and SETcc. A self-authored guest
-  combines a counted loop, address arithmetic, an `XMemAlloc` HLE call and
-  a conditional result (`RAX = 16`) with per-step mnemonics in the trace.
-  See [docs/milestone-35.md](docs/milestone-35.md).
-- **Modular HLE runtime (M36)** — a single API resolver, bounded dispatch
-  tracing and typed failures back 17 deterministic **xHoly VM services**
-  (memory query/protect, guest threads, events, mutexes, VM info/ticks).
-  These are explicitly **not Xbox APIs**; the Xbox registry remains 7
-  modules / 21 entries with 0 fully implemented functions. Synthetic
-  guests can call multiple modules in sequence. See
-  [docs/milestone-36.md](docs/milestone-36.md).
-- **Import analysis** — `--analyze` produces a read-only compatibility
-  report classifying every import as implemented / partially
-  implemented / unsupported / unknown, with evidence strings.
-- **Minimal guest fixture** — `games/minimal/` is a real on-disk guest
-  image (XEX2 header + payload) that runs through the loader, kernel
-  and interpreter path and writes a guest framebuffer the GUI blits.
-- **Windowed GUI** — launcher-style UI (winit + wgpu, auto GPU API:
-  Vulkan/OpenGL/software), game browser for mounted media, guest launch
-  path, console log, HLE trace viewer, Discord Rich Presence, themes,
-  post-processing (bloom, tone mapping, FXAA/MSAA).
-- **Terminal UI** — ratatui frontend with the same launch path.
-- **Infrastructure** — config layering/hot-reload, save system,
-  input state model, logging, mod loader, cheat engine, benchmarks,
-  cloud/network/telemetry abstractions, multiplayer model, storage
-  layer, progress tracking derived from `progress.json`.
+`hle::with_xh_vm_entries()` defines four clearly named modules:
+`xh_vm.mem.dll`, `xh_vm.sys.dll`, `xh_vm.krn.dll`, `xh_vm.sync.dll` with 17
+fully implemented services (memory query/protect/stats, ticks/info, guest
+thread and event/mutex state machines). Their evidence strings explicitly
+say **"NOT an Xbox API"**.
 
-## 6. Screenshots and interface overview
+They are deterministic host scaffolding with xHoly-owned semantics (VM
+ticks, opaque integer handles, documented wait results) and **never** enter
+the Xbox compatibility inventory or its percentages. The read-only analyzer
+and CLI use the Xbox-only registry; `HleRuntime::with_xh_vm()` is used only
+by synthetic guests.
 
-No screenshots are bundled in this repository yet. The windowed GUI is a
-launcher-style interface with a game grid, a detail panel (metadata,
-console output, HLE trace), a toolbar with launch/settings controls and
-an emulation overlay (Ctrl+Alt+T). The terminal UI provides the same
-launch path in a console.
+## 9. CPU emulation
 
-## 7. Compatibility and current limitations
+`src/core/cpu/x64.rs` is a small, explicit interpreter — not a complete
+x86-64 emulator. Supported: MOV (`B8+r`, `89`, `8B`, `C7 /0`), ALU
+(`ADD/OR/AND/SUB/XOR/CMP` via `83/81 /n` and `01/09/21/29/31/39`,
+`03/0B/23/2B/33/3B`), TEST, LEA, INC/DEC (`FF /0,/1`), MOVZX/MOVSX, SETcc,
+JMP/Jcc, CALL/RET, PUSH/POP, NOP/HLT. Address modes: register,
+`[reg+disp]`, SIB and RIP-relative. Flags modelled: CF/ZF/SF/OF; PF/AF are
+not, so JP/JNP fault explicitly. Byte/word ALU, shifts, IMUL and CMOV are
+not implemented. Other CPU layers (AArch64 test interpreter, Phase-1
+scaffold, x86-64→WASM JIT research) are separate and unrelated.
 
-This section is normative: it describes what xHoly **cannot** do today.
+## 10. Guest memory
 
-- **No retail Xbox game is confirmed to boot or run.** All verified
-  execution uses synthetic or bundled test guest images.
-- **The guest CPU supports only a bounded x86-64 instruction subset.**
-  It is sufficient for test programs, not a complete x86-64 emulator;
-  retail binaries use far more of the ISA.
-- **HLE API coverage is incomplete.** Only `xmem`'s
-  `XMemAlloc`/`XMemFree` are implemented; most documented Gen9 imports
-  are classified `Unknown` (no reliable public documentation) or
-  `Unsupported`.
-- **Microsoft x64 ABI support is limited** — integer arguments and
-  stack passing only; XMM/float arguments are not implemented.
-- **The GPU path is not an Xbox GPU emulator.** There is no guest
-  draw-call translation, no D3D12 device emulation and no Xbox shader
-  compatibility; the GUI presents host-rendered frames and blits the
-  test guest's framebuffer.
-- **GUI integration for PE32+ guest execution is partial** — the
-  pipeline runs headless; the GUI's guest launch path targets the
-  bundled fixture images.
-- **Retail package containers are not supported** — encrypted retail
-  packages are not read, and no DRM/encryption bypass is planned.
-- **XAM service layer is blocked** — no verified Xbox Series X|S XAM ABI
-  exists in the codebase.
-- **Infrastructure modules are mostly headless models** — e.g. no real
-  network transport, no Lua cheat compiler, no multiplayer netcode.
+`GuestMemory` (`read_bytes`/`write_bytes`/`read_u64`/`write_u64`) is the
+single access abstraction. `Memory` is a flat 1 GiB window at
+`regions::TITLE`; `GuestHeap` is the xmem guest heap above it; `GuestSpace`
+routes by guest address range and rejects cross-boundary accesses.
+`XMEM_HEAP_BASE`, `DEFAULT_ALIGNMENT = 16` and the 1 GiB resident cap are
+**xHoly policy**, not verified Xbox values. Allocations track size,
+alignment, raw attributes and protection; freed space is not reused. There
+is **no MMU**, no paging and no hardware fault handling.
 
-## 8. Installation and usage
+## 11. PE32+ loader
 
-### Prerequisites
+`pe64.rs` parses PE32+ headers and sections, validates structural bounds,
+maps sections, applies DIR64/HIGHLOW relocations and resolves import
+descriptors and IAT slots. It rejects non-PE data, wrong machine types,
+overlapping sections, out-of-image sections, non-executable entry points and
+unsupported relocation types with structured `Pe64Error`s. Synthetic
+fixtures are generated in source (`synthetic_pe`, `synthetic_pe_calling`,
+`synthetic_boot_guest`, `synthetic_compute_guest`, `synthetic_multi_hle_guest`).
+Delay-load imports, TLS callbacks, encrypted retail packages and Xbox
+executable containers are **not** supported.
 
-- Rust toolchain (stable; `rustup` recommended). The crate builds with
-  the default toolchain — no pinned version is required by the
-  manifest.
-- Windows x86-64 or Linux x86-64.
-- For the Scala runtime: a JDK and `sbt` (optional; see below).
-- For the native window-manager demo: a C++17 compiler and CMake
-  (optional; `cpp/window_manager/`).
+## 12. Guest execution pipeline
 
-### Prebuilt binary
+`GuestSession::load` validates and maps the image, resolves imports against
+the chosen registry, installs the guest stack with an entry return sentinel
+and registers IAT slots as HLE transition points. `run(max_steps)` steps the
+bounded CPU, reads Microsoft x64 arguments (`RCX/RDX/R8/R9`, stack args via
+the 32-byte shadow space), dispatches through the single runtime, writes
+results to `RAX`, and records a structured `ExecutionReport`. Unsupported,
+unknown and failed calls stop execution with `RAX` untouched. An optional
+MNEMONIC field in step records is additive and M34-compatible.
 
-No prebuilt releases are published by this repository. Build from
-source (below).
+## 13. GPU architecture and status
 
-### Running
+Host presentation uses wgpu (Vulkan/OpenGL/software selection) and the
+windowed GUI blits a synthetic guest framebuffer. `src/core/hle/graphics.rs`
+provides a vendor-neutral *seam* (`HostBackendKind`, `HostRenderBackend`,
+`GraphicsRuntime`) with device **bookkeeping only**: `submit_draw` and
+`create_resource` always return `GraphicsError::Unsupported`. This is
+**not an Xbox GPU emulator**: no guest D3D12 device, no draw-call
+translation, no resource or shader compatibility. Creating a host GPU
+context does not implement `D3D12CreateDevice`.
 
-```sh
-cargo build --release
-./target/release/xholy --help
-```
+## 14. Trace and diagnostics
 
-Scan mounted media and launch the GUI:
+`ExecutionReport` and its events serialize and deserialize. `.xholy-trace.json`
+(schema v2, v1 import compatible, 64 MiB cap) stores the report, optional
+boot phases and instruction records. Import validates format, version,
+consecutive step numbers, boot/report consistency and rejects malformed or
+unsupported input. Derived `hle_call_stats` shows call outcomes in CLI text
+and the GUI `HLE CALLS` panel without any schema change. The GUI trace
+viewer offers timeline, registers, imports, HLE calls, faults and boot
+phases, plus Open/Save/Refresh/Clear controls (path via `--gui-trace`; no
+native dialog dependency).
 
-```sh
-xholy --drives                              # detect optical drives
-xholy --mount "D:\\" --list                  # scan a physical disc
-xholy --mount game.iso --list                # scan an ISO image
-xholy --mount games --list                   # scan a directory
-xholy --gui                                 # windowed GUI
-xholy --gui-tui                             # terminal UI
-xholy --game games/minimal                  # run the bundled guest fixture
-```
+## 15. CLI
 
-## 9. Building from source
-
-### Rust core (required)
-
-```sh
-cargo build --release     # optimized binary → target/release/xholy
-cargo build               # debug build
-cargo test                # full test suite
-cargo test --features cpu-stub   # additionally enables the CPU stub feature
-cargo bench               # Criterion benchmarks
-```
-
-Verified on Windows x86-64. Linux x86-64 builds are covered by CI
-(`.github/workflows/ci.yml`) but were not verified locally.
-
-### Scala runtime (optional)
-
-```sh
-cd scala
-sbt assembly        # JVM fat jar → target/scala-*/xholy-runtime.jar
-sbt fullOptJS       # Scala.js bundle → target/scala-*/xholy-web-opt.js
-```
-
-The Rust host locates these artifacts automatically (see
-`src/runtime/scala_bridge.rs`).
-
-### Native window manager demo (optional, Windows)
-
-```sh
-cd cpp/window_manager
-cmake -B build && cmake --build build
-```
-
-See `cpp/window_manager/README.md` and `INSTALL.md` for details.
-
-## 10. CLI reference
-
-| Flag | Description |
+| Command | Effect |
 |---|---|
-| `xholy [IMAGE]` | Run a game image or disc (e.g. `.iso`, `.xvc`, directory) |
-| `--mount PATH` | Mount an optical source (drive letter, directory or ISO); repeatable for multi-disc |
-| `--list` | List detected games on mounted media and exit |
-| `--drives` | Detect and print physical optical drives, then exit |
-| `--gui` | Launch the windowed GUI (winit + wgpu) |
-| `--gui-tui` | Launch the terminal UI (ratatui) |
-| `--gui-headless [--max-frames N]` | Render the GUI pipeline offscreen (default 300 frames) |
-| `--game PATH` | Run a guest image headless through the emulation path |
-| `--enable-jit` | Enable the experimental x86-64→WASM JIT branch |
-| `--jit-no-fallback` | Disable JIT→interpreter fallback |
-| `--analyze PATH` | Read-only PE32+ import analysis (never executes the file) |
-| `--analyze PATH --json` | Machine-readable analysis report |
-| `--trace PATH [--trace-out FILE] [--json]` | Execute a PE32+ file in the bounded HLE pipeline and export its diagnostic trace |
-| `--guest-test [--json] [--max-steps N]` | Run the self-contained synthetic M33 guest boot (load → HLE → exit) and print its ordered boot trace; defaults to 10,000 steps |
-| `--gui-trace PATH` | Load a `.xholy-trace.json` into the GUI trace viewer (works with `--gui`, `--gui-headless`, `--gui-tui`) |
-| `--progress` | Print the roadmap progress report derived from `progress.json` |
-| `--gpu-api auto\|vulkan\|opengl\|software` | Force the host GPU API (alias: `--renderer`) |
-| `--resolution WxH` | Window size |
-| `--fullscreen` | Start fullscreen |
-| `--theme dark\|gold\|light` | GUI theme |
-| `--fps-limit N` | Cap GUI framerate (`0` = uncapped) |
-| `--frame-pacing auto\|fixed\|uncapped` | Frame pacing policy |
-| `--no-vsync` | Disable VSync (manual frame pacing takes over) |
-| `--bloom` / `--no-bloom` | Bloom post-processing (default on) |
-| `--tone-mapping linear\|reinhard\|filmic\|aces` | Tone mapping operator |
-| `--aa off\|fxaa\|msaa4` | Anti-aliasing |
-| `--native-wm` | Native C++ window-manager demo (Windows) |
-| `--config PATH` | Layered TOML configuration file |
+| `xholy --progress` | Roadmap report derived from `progress.json` |
+| `xholy --analyze PATH [--json]` | Read-only PE32+ import analysis |
+| `xholy --trace PATH [--trace-out FILE] [--json]` | Execute a PE32+ file in the bounded pipeline and export its trace |
+| `xholy --guest-test [--json] [--max-steps N]` | Run the built-in synthetic guest boot and print its trace |
+| `xholy --gui` / `--gui-tui` / `--gui-headless` | Windowed GUI, terminal UI, or offscreen rendering |
+| `xholy --gui-trace PATH` | Load an exported trace into the GUI viewer |
+| `xholy --game PATH [--max-steps N]` | Run a bundled guest image through the legacy execution path |
+| `xholy [IMAGE] --mount PATH --list --drives` | Library and optical-source commands |
 
-## 11. Development roadmap
+All commands work headless; no graphical environment is required for CLI
+or test execution.
 
-The binding roadmap is [ROADMAP.md](ROADMAP.md); the binding
-architecture decision is
-[docs/adr/0001-target-architecture.md](docs/adr/0001-target-architecture.md).
-An honest inventory of unimplemented components is kept in
-[MISSING.md](MISSING.md), and the feature/status checklist in
-[STATUS.md](STATUS.md).
+## 16. GUI
+
+The winit/wgpu windowed GUI is a launcher-style interface with a game grid,
+view tabs, console, settings, emulation overlay and the HLE Trace Viewer.
+It is host-only: it presents frames and diagnostics but does not translate
+guest GPU commands. The terminal UI shares the configuration but not the
+trace viewer. GUI tests exercise state and rendering without a real window.
+
+## 17. Building from source
+
+```powershell
+git clone https://github.com/baummarder/xHoly.git
+cd xHoly
+cargo build --release
+cargo test --workspace
+```
+
+Optional Scala modules live in `scala/` (requires `sbt assembly`); they are
+not required for the Rust emulator. The native window-manager demo is
+Windows-only (`cpp/window_manager/`).
+
+## 18. Installation and usage
+
+Prebuilt releases are published on the project's GitHub releases page when
+available. For local use, build with `cargo build --release`, then run the
+CLI commands above. See [`Install.md`](Install.md) for host prerequisites;
+that file may contain user-local notes and is preserved as-is by automation.
+
+## 19. Tests
+
+```powershell
+cargo fmt --all -- --check
+cargo check --workspace
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features
+```
+
+Integration suites cover the guest pipeline (`tests/guest_pipeline_tests.rs`),
+M33 boot (`guest_boot_tests.rs`), M34 GUI trace (`gui_trace_tests.rs`),
+M35 execution expansion (`guest_expansion_tests.rs`), M36 HLE runtime
+(`hle_expansion_tests.rs`) and the M37 Xbox inventory
+(`xbox_hle_inventory_tests.rs`). Fixtures are generated in source; no
+commercial game binary is used.
+
+## 20. Project structure
+
+| Path | Content |
+|---|---|
+| `src/core/cpu/` | Bounded x86-64 interpreter, AArch64 test interpreter, scaffold, translator |
+| `src/core/loader/` | PE32+, XEX2, ISO and image parsing |
+| `src/core/pipeline/` | GuestSession, ABI, diagnostics, imports, boot, trace |
+| `src/core/hle/` | Registry, resolver, runtime, xmem, kernel, system, graphics |
+| `src/core/kernel/` | Legacy syscall/scheduler models (not a Gen9 Xbox ABI) |
+| `src/gui/`, `src/game` frontends | winit/wgpu GUI, terminal UI, renderers |
+| `src/jit/` | x86-64→WASM research (not the guest CPU path) |
+| `tests/` | Integration suites listed above |
+| `docs/` | Whitepaper, ADR, milestone reports, Xbox HLE inventory |
+
+## 21. Roadmap
+
+See [ROADMAP.md](ROADMAP.md), [STATUS.md](STATUS.md) and [MISSING.md](MISSING.md).
+Milestone reports: [M33](docs/milestone-33.md), [M34](docs/milestone-34.md),
+[M35](docs/milestone-35.md), [M36](docs/milestone-36.md),
+[M37 inventory](docs/xbox-hle-inventory.md). Next research gates require
+**citable public Xbox signatures** before any new Xbox API can be implemented.
 
 ### Project development progress
 
@@ -372,96 +356,51 @@ Last verification: 2026-11-30.
 
 Calculation: each task adds `weight x credit` to its category, where credit is 0 for Planned and Blocked, 0.5 for Partially Implemented, and 1 for Implemented and Verified. Task weights total 100 within each category, so the category sum is its completion percentage. Overall completion is the category completion weighted by the category weights. Everything is derived from `progress.json` by `src/progress.rs`. This measures roadmap progress only, not game compatibility, production readiness or retail boot success.
 
-### Performance targets
+### Performance targets (goals, not measurements)
 
 | Metric | Target |
 |---|---|
 | Frame rate | 60 FPS @ 1440p/4K |
 | Input latency | < 15 ms |
-| Compatibility | Xbox Series X\|S (Gen9): goal; no retail title runs yet |
+| Compatibility | Xbox Series X\|S (Gen9): research goal; no retail title runs yet |
 
-These are goals for the completed emulator, not current measurements —
-see `benchmarks/REPORT.md` for the scaffold baseline.
+## 22. Known limitations
 
-## 12. Contributing
+- **No retail Xbox title is confirmed to boot or run.**
+- No complete x86-64 emulator; the bounded subset faults on unsupported opcodes.
+- No Xbox kernel ABI, no MMU, no paging, no retail package support.
+- No Xbox GPU emulation, no draw-call or shader translation.
+- Xbox HLE: 0 fully implemented APIs; XMem attributes are not decoded.
+- xHoly VM services are scaffold and must not be read as Xbox compatibility.
+- Legacy Xbox 360 / PowerPC / AArch64 code is outside the Gen9 target.
+- GUI and CLI diagnostics are research tools, not a consumer emulator UI.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Credit only contributors who
-made a substantive change. AI agents should use their verified bot
-identity (see [Agents.md](Agents.md)).
+## 23. Legal and technical separation
 
-When contributing:
+xHoly is independent of Microsoft and does not include or link Microsoft
+GDK/GDKX SDKs. No proprietary code, retail game binary or copyrighted game
+asset is part of this repository. The ScarlettX README is used only as a
+compatibility reference (target names, DLL list); no source was copied and
+its licence status is unresolved. Xbox 360 ordinals from Xenia are
+feature-gated legacy material and are never used as Gen9 evidence. See
+[ADR 0001](docs/adr/0001-target-architecture.md) and the legal notes below.
 
-- Keep claims evidence-based: the HLE registry requires a reliable
-  public source before a symbol may leave the `Unknown` state.
-- Add tests for new behavior; the suite is the verification bar.
-- Do not bundle firmware, game dumps or proprietary SDK code.
+## 24. Contributing and development
 
-## 13. Third-party components and acknowledgements
+Work in focused, testable modules. Every behavioural change needs unit or
+integration tests; every API status change needs a citable public source
+and documented semantics. Run all four Cargo checks before committing.
+Do not add dependencies without a concrete reason. Do not invent API
+signatures, ordinals, flag values or return codes.
 
-xHoly's own code is licensed under the Apache License 2.0. Direct Rust
-dependencies (wgpu, winit, ratatui, serde, clap, and others) and the
-bundled Inter font are listed with their licenses in
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Crate metadata is
-the source of the license column; it has not been separately
-legal-reviewed.
+## 25. License and acknowledgements
 
-ScarlettX is used as a **compatibility reference only**; no code is
-copied from it. No Microsoft Xbox GDK/GDKX code is included.
+The Rust crate is licensed under Apache-2.0 (see `Cargo.toml`). Third-party
+dependencies retain their own licences. Public technical documentation from
+Microsoft, MIT-licensed `microsoft/DirectXTex` and Xbox-ATG samples, and
+the community ScarlettX compatibility notes are acknowledged as references
+only; no code was copied from them.
 
-## 14. License
+---
 
-xHoly's own code is distributed under the
-[Apache License 2.0](LICENSE).
-
-The Apache License applies to xHoly's own covered code only. It does
-not grant any rights to Microsoft's trademarks, proprietary software,
-firmware, commercial games or third-party components, which remain
-subject to their respective licenses and terms.
-
-## 15. Legal information and independence
-
-### Independence
-
-xHoly is an independent community project. It is not affiliated with,
-endorsed by, sponsored by, or officially connected to Microsoft, Xbox,
-Rockstar Games or Take-Two Interactive. Microsoft, Xbox, Xbox One, Xbox
-Series X|S and associated trademarks belong to their respective
-owners. The project does not claim ownership of Microsoft's intellectual
-property.
-
-### Independent implementation
-
-xHoly aims to implement its own emulator functionality independently.
-No proprietary Microsoft SDK source code is included in the project's
-own implementation. This is an architectural goal; the dependency set
-has not been fully audited for SDK independence (see
-[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)).
-
-No Xbox firmware, commercial game files or protected proprietary
-content is bundled with the project.
-
-### User responsibility
-
-Users are responsible for ensuring that their use of the software and
-any external files they supply complies with applicable law.
-Reverse-engineering and interoperability rules vary by jurisdiction,
-and no interoperability provision grants blanket permission for every
-activity. Users cannot assume they may freely dump, decrypt,
-distribute or execute every commercial game. This README is not legal
-advice.
-
-### License scope
-
-The Apache License 2.0 applies to xHoly's own covered code. It does not
-grant rights to Microsoft's trademarks, proprietary software, firmware
-or commercial games. Third-party components remain subject to their
-respective licenses.
-
-## GTA VI statement
-
-xHoly is not specifically developed, marketed, promoted or positioned
-for Grand Theft Auto VI. The project makes no GTA VI compatibility
-claims or promises and does not include GTA VI-specific features or
-assets.
-
-**Redeem Your Games.**
+<p align="center"><b>xHoly remains an independent research project.</b></p>
