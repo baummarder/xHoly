@@ -90,6 +90,15 @@ events, mutexes, system info) in a namespace explicitly separate from Xbox
 APIs. A synthetic guest calls two modules in sequence and returns a
 verifiable result. See [milestone-36.md](milestone-36.md).
 
+Milestone 37 completes the evidence audit of all 21 Xbox API entries and
+documents which ones can be implemented without inventing signatures,
+flags, layouts or return conventions. None can: the registry therefore
+keeps 0 Implemented, 2 PartiallyImplemented, 2 Unsupported and 17 Unknown
+entries. All entries are dispatched through the single resolver/dispatcher
+with no fabricated return value. xHoly VM services remain outside the Xbox
+compatibility rating. See [xbox-hle-inventory.md](xbox-hle-inventory.md)
+and [milestone-37.md](milestone-37.md).
+
 ## 4. GPU translation
 
 Xbox Series X|S renders through Direct3D 12 on RDNA2. The translation layer maps guest D3D12 calls to a host backend: D3D12 on Windows, Vulkan on Linux.
