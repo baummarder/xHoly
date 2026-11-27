@@ -28,7 +28,13 @@ struct Args {
     #[arg(long, value_name = "PATH", requires = "trace")]
     trace_out: Option<std::path::PathBuf>,
 
-    /// With --analyze or --trace: print JSON instead of the text summary.
+    /// Run the self-contained synthetic M33 guest boot (no file access).
+    /// Prints an ordered boot trace with load, memory, stack, entry point,
+    /// CPU steps, HLE invocation/return, guest exit and final result.
+    #[arg(long)]
+    guest_test: bool,
+
+    /// With --analyze, --trace or --guest-test: print JSON instead of the text summary.
     #[arg(long)]
     json: bool,
     /// Path to a game image or disc (e.g. .iso, .xvc, directory)
@@ -265,6 +271,33 @@ fn main() {
             }
         } else {
             print!("{rendered}");
+        }
+        return;
+    }
+    if args.guest_test {
+        let max_steps = args.max_steps.unwrap_or(10_000);
+        let trace = match xholy::core::pipeline::boot::run_synthetic_boot(max_steps) {
+            Ok(trace) => trace,
+            Err(e) => {
+                eprintln!("xHoly: synthetic guest boot failed to load: {e}");
+                std::process::exit(1);
+            }
+        };
+        let rendered = if args.json {
+            match trace.export_json() {
+                Ok(text) => format!("{text}\n"),
+                Err(e) => {
+                    eprintln!("xHoly: cannot serialise boot trace: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            trace.render_text()
+        };
+        print!("{rendered}");
+        // A failed/incomplete guest boot is a real failure of the test.
+        if trace.status != xholy::core::pipeline::boot::BootStatus::Success {
+            std::process::exit(1);
         }
         return;
     }

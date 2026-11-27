@@ -45,6 +45,30 @@ The existing x86-64 decoder and the x86-64→WASM JIT are research subsets. Whet
 
 The AArch64 interpreter remains only as a test harness. It does not model any Xbox target.
 
+### Guest execution pipeline (M29–M33)
+
+For bounded research tests, `src/core/pipeline/` drives a synthetic
+PE32+ guest end-to-end:
+
+```text
+PE32+ loader → import resolution → X64Cpu → HLE dispatch → ExecutionReport → BootTrace
+```
+
+`GuestSession` owns the flat guest window and the xmem guest heap behind a
+single `GuestSpace` façade. Guest addresses are explicit `u64` VAs; IAT
+calls are intercepted by guest slot address and never contain host
+pointers. The Microsoft x64 argument registers (`RCX/RDX/R8/R9`, return
+in `RAX`) are documented in `src/core/pipeline/abi.rs`; strict stack
+layout checks are available for arities above four arguments.
+
+Milestone 33 adds `src/core/pipeline/boot.rs`: a self-contained synthetic
+guest makes one `XMemAlloc` call through its IAT slot and returns a
+documented status. Its ordered boot trace (load, memory, stack, entry
+point, CPU steps, HLE invocation/return, exit, final result) is exported
+by `xholy --guest-test [--json]` and can be fed to the existing HLE Trace
+Viewer. This is a research fixture, not retail boot evidence.
+See [milestone-33.md](milestone-33.md).
+
 ## 4. GPU translation
 
 Xbox Series X|S renders through Direct3D 12 on RDNA2. The translation layer maps guest D3D12 calls to a host backend: D3D12 on Windows, Vulkan on Linux.

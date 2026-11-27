@@ -52,6 +52,7 @@ use crate::core::pipeline::diagnostics::{describe_fault, DiagnosticEvent, Diagno
 use crate::core::pipeline::imports::{resolve_imports, ResolvedImport};
 
 pub mod abi;
+pub mod boot;
 pub mod diagnostics;
 pub mod imports;
 pub mod trace;
@@ -336,6 +337,39 @@ pub struct GuestSession {
     imports: Vec<ResolvedImport>,
     calling_convention: CallingConvention,
     diagnostics: Diagnostics,
+    /// One record per retired instruction of the most recent `run`.
+    /// Cleared at the start of every run; no host pointers are stored.
+    step_records: Vec<StepRecord>,
+}
+
+/// What one retired guest instruction did (M33 boot trace source).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum StepKind {
+    /// Ordinary instruction retired.
+    Executed,
+    /// `HLT` retired and halted the guest.
+    Halted,
+    /// Indirect call through an HLE IAT slot.
+    HleCall {
+        /// Guest VA of the intercepted slot.
+        slot_addr: u64,
+    },
+    /// The instruction faulted and did not retire.
+    Fault {
+        /// Structured fault description (no host data).
+        description: String,
+    },
+}
+
+/// One retired (or faulting) instruction of a guest run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StepRecord {
+    /// Retired instruction counter (faults keep the previous value).
+    pub step: u64,
+    /// Guest VA of the instruction pointer before it executed.
+    pub rip: u64,
+    /// Outcome of the step.
+    pub kind: StepKind,
 }
 
 impl fmt::Debug for GuestSession {
@@ -454,6 +488,7 @@ impl GuestSession {
             imports,
             calling_convention: CallingConvention::default(),
             diagnostics,
+            step_records: Vec::new(),
         })
     }
 
@@ -505,6 +540,11 @@ impl GuestSession {
         }
     }
 
+    /// Per-instruction records of the most recent [`Self::run`].
+    pub fn step_records(&self) -> &[StepRecord] {
+        &self.step_records
+    }
+
     /// Execute from the entry point until a stop condition.
     ///
     /// `max_steps` bounds the number of retired instructions; reaching
@@ -513,6 +553,7 @@ impl GuestSession {
     /// report never claims more than what ran.
     pub fn run(&mut self, max_steps: u64) -> ExecutionReport {
         let mut steps = 0u64;
+        self.step_records.clear();
         let reason = loop {
             if self.cpu.rip == ENTRY_RETURN_SENTINEL {
                 break StopReason::Returned;
@@ -524,6 +565,7 @@ impl GuestSession {
             if steps >= max_steps {
                 break StopReason::StepsExhausted;
             }
+            let rip_before = self.cpu.rip;
             // The façade borrows memory and heap for one step; both
             // borrows end before dispatch borrows the runtime again.
             let outcome = {
@@ -536,20 +578,45 @@ impl GuestSession {
             match outcome {
                 // Only retired instructions count towards the budget;
                 // a faulting instruction never retires.
-                StepOutcome::Executed => steps += 1,
+                StepOutcome::Executed => {
+                    steps += 1;
+                    self.step_records.push(StepRecord {
+                        step: steps,
+                        rip: rip_before,
+                        kind: StepKind::Executed,
+                    });
+                }
                 StepOutcome::Halted => {
                     steps += 1;
+                    self.step_records.push(StepRecord {
+                        step: steps,
+                        rip: rip_before,
+                        kind: StepKind::Halted,
+                    });
                     break StopReason::Halted;
                 }
                 StepOutcome::Fault(fault) => {
+                    let description = describe_fault(&fault);
+                    self.step_records.push(StepRecord {
+                        step: steps,
+                        rip: rip_before,
+                        kind: StepKind::Fault {
+                            description: description.clone(),
+                        },
+                    });
                     self.diagnostics.push(DiagnosticEvent::CpuFault {
                         rip: fault_rip(&fault),
-                        description: describe_fault(&fault),
+                        description,
                     });
                     break StopReason::Fault(fault);
                 }
                 StepOutcome::HleCall { slot_addr } => {
                     steps += 1;
+                    self.step_records.push(StepRecord {
+                        step: steps,
+                        rip: rip_before,
+                        kind: StepKind::HleCall { slot_addr },
+                    });
                     if let Some(stop) = self.dispatch(slot_addr) {
                         break stop;
                     }

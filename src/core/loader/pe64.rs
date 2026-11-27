@@ -537,6 +537,45 @@ pub fn synthetic_pe() -> Vec<u8> {
 /// base-relocation directory is cleared because the fixture's DIR64 test
 /// patch site overlaps the entry code. Like [`synthetic_pe`] this is a
 /// fixture generated from source — no third-party binary is involved.
+/// Build a self-contained synthetic guest for the M33 first-boot test.
+///
+/// Starts from [`synthetic_pe_calling`] (`xmem.dll!XMemAlloc`) and replaces
+/// only the entry code. The guest passes `(64, 0)` in `RCX`/`RDX`, calls the
+/// single IAT slot, writes a marker through the returned guest pointer and
+/// finishes with a documented status in `RAX`:
+///
+/// | Bytes | Instruction | Purpose |
+/// |---|---|---|
+/// | `B9 40 00 00 00` | `mov ecx, 64` | `XMemAlloc(size=64, …)` |
+/// | `31 D2` | `xor edx, edx` | `XMemAlloc(…, attributes=0)` |
+/// | `FF 15 F3 05 00 00` | `call [rip+0x5f3]` | IAT slot at RVA `0x1600` |
+/// | `48 C7 00 11 00 00 00` | `mov qword [rax], 0x11` | guest heap marker |
+/// | `B8 33 4D 00 00` | `mov eax, 0x4D33` | **documented exit status** |
+/// | `C3` | `ret` | entry return sentinel |
+///
+/// `0x4D33` ("M33") is a synthetic marker chosen by xHoly. It is **not** an
+/// Xbox status code. Every opcode is in the supported x86-64 subset; no
+/// CPU extension is required.
+pub const SYNTHETIC_BOOT_STATUS: u64 = 0x4D33;
+/// Marker the synthetic guest writes through the HLE-returned pointer.
+pub const SYNTHETIC_BOOT_MARKER: u64 = 0x11;
+
+/// Byte encoding of the M33 guest entry code (RVA `0x1000`, file `0x400`).
+pub const SYNTHETIC_BOOT_CODE: &[u8] = &[
+    0xB9, 0x40, 0x00, 0x00, 0x00, // mov ecx, 64
+    0x31, 0xD2, // xor edx, edx
+    0xFF, 0x15, 0xF3, 0x05, 0x00, 0x00, // call [rip+0x5f3] -> RVA 0x1600
+    0x48, 0xC7, 0x00, 0x11, 0x00, 0x00, 0x00, // mov qword [rax], 0x11
+    0xB8, 0x33, 0x4D, 0x00, 0x00, // mov eax, 0x4D33 (status)
+    0xC3, // ret
+];
+
+pub fn synthetic_boot_guest() -> Vec<u8> {
+    let mut bytes = synthetic_pe_calling("xmem.dll", "XMemAlloc");
+    bytes[0x400..0x400 + SYNTHETIC_BOOT_CODE.len()].copy_from_slice(SYNTHETIC_BOOT_CODE);
+    bytes
+}
+
 pub fn synthetic_pe_calling(module: &str, symbol: &str) -> Vec<u8> {
     assert!(
         module.len() <= 15,

@@ -1,4 +1,4 @@
-//! CLI checks for `--progress` and `--analyze` (read-only commands).
+//! CLI checks for `--progress`, `--analyze`, `--trace` and `--guest-test`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -25,7 +25,7 @@ fn progress_command_prints_roadmap_summary_without_compatibility_claims() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("Overall roadmap completion"), "{text}");
     assert!(text.contains("Roadmap progress only"), "{text}");
-    assert!(text.contains("Last verification: 2026-11-25"), "{text}");
+    assert!(text.contains("Last verification: 2026-11-27"), "{text}");
 }
 
 #[test]
@@ -124,6 +124,39 @@ fn trace_command_exports_json_and_text_without_modifying_guest() {
     );
     let _ = std::fs::remove_file(&path);
     let _ = std::fs::remove_file(&out_path);
+}
+
+#[test]
+fn guest_test_command_runs_the_synthetic_boot_and_reports_success() {
+    let out = xholy().arg("--guest-test").output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("[boot] load started"), "{text}");
+    assert!(text.contains("[boot] stack initialized"), "{text}");
+    assert!(
+        text.contains("[boot] hle invoked: xmem.dll!XMemAlloc"),
+        "{text}"
+    );
+    assert!(text.contains("[boot] final result: SUCCESS"), "{text}");
+    assert!(!text.contains('%'), "no compatibility percentage: {text}");
+
+    let json_out = xholy()
+        .args(["--guest-test", "--json", "--max-steps", "1000"])
+        .output()
+        .unwrap();
+    assert!(json_out.status.success());
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json_out.stdout).expect("valid boot trace JSON");
+    assert_eq!(parsed["status"], "Success");
+    assert_eq!(parsed["steps"], 6);
+    assert_eq!(parsed["rax"], 0x4D33);
+    assert_eq!(parsed["marker_verified"], true);
+    assert!(parsed["events"].is_array());
+    assert!(parsed["report"]["imports"].is_array());
 }
 
 #[test]
